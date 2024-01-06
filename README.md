@@ -1,4 +1,4 @@
-<img src="OpenRSSSL.png" width="500" div align=center />
+<img src="OpenRSSSL.png" width="900" div align=center />
 
 ## OpenRSSSL Introduction
 
