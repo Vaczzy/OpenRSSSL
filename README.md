@@ -1,7 +1,4 @@
 <img src="docs/OpenRSSSL.png" div align=center />
-
-## OpenRSSSL Introduction
-
 Open Source Self-supervised Remote Sensing Understanding Process
 
 # Coming soon...
@@ -9,15 +6,22 @@ Open Source Self-supervised Remote Sensing Understanding Process
 Progress on...
 * Create stable VISSL version
 
-### Support Models:
+### Support Models (* in our plan):
 #### Contrastive Learning Models:
 * SimCLR
 * MoCo
+* BYOL *
 * Barlow Twins
+* DenseCL *
+* SimSiam *
+* SwAV
 * FALSE (GRSL)
 * GraSS (TGRS)
 * Coming Soon...
 #### Generative Models:
+* MAE *
+* SimMIM *
+* EVA *
 * Coming Soon...
 #### Self-Distillation Models:
 * DINO
