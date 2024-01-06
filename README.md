@@ -5,3 +5,12 @@
 Coming soon...
 
 * Create stable VISSL version
+
+Support Models:
+
+* SimCLR
+* MoCo
+* Barlow Twins
+* FALSE
+* GraSS
+* Coming Soon...
