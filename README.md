@@ -10,7 +10,10 @@ Progress on...
 * Create stable VISSL version
 
 ### Support Models (* in our plan):
-#### Contrastive Learning Models:
+* ResNet
+* Transformer
+### Support Self-supervised Method (* in our plan):
+#### Contrastive Learning Method:
 * SimCLR
 * MoCo
 * BYOL *
@@ -21,12 +24,13 @@ Progress on...
 * FALSE (GRSL)
 * GraSS (TGRS)
 * Coming Soon...
-#### Generative Models:
+#### Generative Model Method:
 * MAE *
 * SimMIM *
 * EVA *
+* Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
 * Coming Soon...
-#### Self-Distillation Models:
+#### Self-Distillation Method:
 * DINO
 * xx
 * Coming Soon...
