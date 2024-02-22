@@ -32,7 +32,8 @@ Progress on...
 * Coming Soon...
 #### Self-Distillation Method:
 * DINO
-* xx
+* iBOT
+
 * Coming Soon...
 
 ## Acknowledgement
