@@ -53,7 +53,7 @@ if __name__ == "__main__":
     """
     Example usage:
 
-    `python tools/run_distributed_engines.py config=test/integration_test/quick_simclr`
+    `python tools/run_distributed_engines.py config=pretrain/simclr/simclr_4node_resnet.yaml`
     """
     overrides = sys.argv[1:]
     assert is_hydra_available(), "Make sure to install hydra"
