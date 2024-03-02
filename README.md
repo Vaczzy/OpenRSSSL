@@ -6,7 +6,7 @@ Open Source Self-supervised Remote Sensing Understanding Process
 
 # Coming soon...
 
-Progress on...
+TODO List:
 * Create stable VISSL version
 
 ### Support Models (* in our plan):
