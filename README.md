@@ -33,7 +33,7 @@ TODO List:
 #### Self-Distillation Method:
 * DINO
 * iBOT
-
+* DINO v2
 * Coming Soon...
 
 ## Acknowledgement
