@@ -7,7 +7,13 @@ Open Source Self-supervised Remote Sensing Understanding Process
 # Coming soon...
 
 TODO List:
-* Create stable VISSL version
+
+- [x] Create stable VISSL version
+- [ ] Simplify installation process
+- [ ] Complete the Pretrain Process
+
+## Version Record
+2024-03-03 openrsssl (beta version)
 
 ### Support Models (* in our plan):
 * ResNet
