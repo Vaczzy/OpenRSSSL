@@ -1,0 +1,16 @@
+.vscode
+.idea
+.DS_Store
+
+dataset_catalog.json
+
+*.py[cod]
+*.so
+*.egg
+*.egg-info
+dist
+build
+__pycache__
+
+# Development Settings
+*_debugger.*
