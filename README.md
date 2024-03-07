@@ -15,9 +15,8 @@ TODO List:
 ## Version Record
 2024-03-03 openrsssl (beta version)
 
-### Support Models (* in our plan):
-* ResNet
-* Transformer
+OpenRSSSL alpha version [install](docs/install_openrsssl.md) 
+
 ### Support Self-supervised Method (* in our plan):
 #### Contrastive Learning Method:
 * SimCLR
