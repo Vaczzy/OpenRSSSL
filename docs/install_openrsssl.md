@@ -41,7 +41,7 @@ pip install scikit-image
 pip install importlib-resources==5.12.0
 ```
 
-4. Install OpenRSSSL
+5. Install OpenRSSSL
 
 Download OpenRSSSL source code and switch to the source path for installation:
 
