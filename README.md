@@ -4,6 +4,7 @@
 
 Open Source Self-supervised Remote Sensing Understanding Process
 
+Install alpha version: [install_alpha](docs/install_openrsssl.md) 
 # Coming soon...
 
 TODO List:
@@ -13,9 +14,7 @@ TODO List:
 - [ ] Complete the Pretrain Process
 
 ## Version Record
-2024-03-03 openrsssl (beta version)
-
-OpenRSSSL alpha version [install](docs/install_openrsssl.md) 
+2024-03-03 openrsssl (alpha version)
 
 ### Support Self-supervised Method (* in our plan):
 #### Contrastive Learning Method:
