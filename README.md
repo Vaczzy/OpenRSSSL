@@ -26,6 +26,7 @@ OpenRSSSL alpha version [install](docs/install_openrsssl.md)
 * DenseCL *
 * SimSiam *
 * SwAV
+* GLCNet (TGRS) *
 * FALSE (GRSL)
 * GraSS (TGRS)
 * Coming Soon...
