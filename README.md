@@ -53,7 +53,7 @@ pip install classy-vision@https://github.com/Vaczzy/ClassyVision/tarball/master
 pip install -e .[dev]
 ```
 
-## SSL Pretraining:
+## SSL Pretraining
 ```
 python tools/run_distributed_engines.py config=pretrain/GraSS/grass_1gpu_resnet_b256.yaml \
 config.DATA.TRAIN.DATASET_NAMES=["loveda_urban"]
