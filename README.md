@@ -1,9 +1,11 @@
-[![pytorch](https://img.shields.io/badge/pytorch-2.0-blue)](https://pytorch.org/get-started/previous-versions/)
-[![cuda](https://img.shields.io/badge/cuda-11.7~11.8-orange)](https://developer.nvidia.com/cuda-downloads)
+
 
 <p align="center">
     <img src="docs/OpenRSSSL.png" width="500" />
 </p>
+
+[![pytorch](https://img.shields.io/badge/pytorch-2.0-blue)](https://pytorch.org/get-started/previous-versions/)
+[![cuda](https://img.shields.io/badge/cuda-11.7-orange)](https://developer.nvidia.com/cuda-downloads)
 
 <br>
 
