@@ -2,16 +2,15 @@
 
 ## OpenRSSSL Introduction
 
-Open Source Self-supervised Remote Sensing Understanding Process
+Open Source Remote Sensing Self-supervised Learning
 
-Install alpha version: [install_alpha](docs/install_openrsssl.md) 
-# Coming soon...
+This repository is OPEN, Pull requests are welcome. 
 
-TODO List:
+## TODO List
 
 - [x] Create stable VISSL version
 - [x] Simplify installation process
-- [ ] Complete the Pretrain Process
+- [ ] Complete the Pretrain process
 - [ ] Add Remote Sensing Image Segmentation Code
 - [ ] Add Remote Sensing Image Classfication Code
 - [ ] Add Remote Sensing Image Object Detection Code
@@ -60,8 +59,8 @@ python tools/run_distributed_engines.py config=pretrain/GraSS/grass_1gpu_resnet_
 config.DATA.TRAIN.DATASET_NAMES=["loveda_urban"]
 ```
 
-# Support Self-supervised Method
-#### Contrastive Learning Method:
+## Support Self-supervised Method
+### Contrastive Learning Method:
 * SimCLR
 * MoCo
 * BYOL *
@@ -73,17 +72,17 @@ config.DATA.TRAIN.DATASET_NAMES=["loveda_urban"]
 * FALSE (GRSL)
 * GraSS (TGRS)
 * Coming Soon...
-#### Generative Model Method:
+### Generative Model Method:
 * MAE *
 * SimMIM *
 * EVA *
 * Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
 * Coming Soon...
-#### Self-Distillation Method:
+### Self-Distillation Method:
 * DINO
 * iBOT
 * DINO v2
 * Coming Soon...
 
 ## Acknowledgement
-I would like to thank the [VISSL](https://github.com/facebookresearch/vissl) and [MMSegmentation](https://github.com/open-mmlab/mmsegmentation) for its open-source project.
+We would like to thank the [VISSL](https://github.com/facebookresearch/vissl) and [MMSegmentation](https://github.com/open-mmlab/mmsegmentation) for its open-source project.
