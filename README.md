@@ -1,10 +1,11 @@
-<img src="docs/OpenRSSSL.png" div align=center />
 
-## OpenRSSSL Introduction
+<p align="center">
+    <img src="docs/OpenRSSSL.png" width="400" />
+<p>
+<br>
+Open Source Remote Sensing Self-supervised Learning.
 
-Open Source Remote Sensing Self-supervised Learning
-
-This repository is OPEN, Pull requests are welcome. 
+This repository is OPEN, Pull requests are welcome.
 
 ## TODO List
 
