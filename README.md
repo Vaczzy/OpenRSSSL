@@ -1,8 +1,13 @@
 
 <p align="center">
-    <img src="docs/OpenRSSSL.png" width="400" />
-<p>
+    <img src="docs/OpenRSSSL.png" width="500" />
+</p>
+
+[![pytorch](https://img.shields.io/badge/pytorch-2.0-blue)](https://pytorch.org/get-started/previous-versions/)
+[![cuda](https://img.shields.io/badge/cuda-11.7~11.8-red)](https://developer.nvidia.com/cuda-downloads)
+
 <br>
+
 Open Source Remote Sensing Self-supervised Learning.
 
 This repository is OPEN, Pull requests are welcome.
