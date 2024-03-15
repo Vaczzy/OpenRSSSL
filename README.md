@@ -1,11 +1,10 @@
-
-
 <p align="center">
     <img src="docs/OpenRSSSL.png" width="500" />
+    <a href="https://pytorch.org/get-started/previous-versions/"><img src="https://img.shields.io/badge/pytorch-2.0-blue"></a>
+    <a href="https://developer.nvidia.com/cuda-downloads"><img src="https://img.shields.io/badge/cuda-11.7-yellow"></a>
+    <a href="https://github.com/facebookresearch/vissl"><img src="https://img.shields.io/badge/vissl-0.1.5-red"></a>
+    <a href="https://github.com/open-mmlab/mmsegmentation"><img src="https://img.shields.io/badge/mmseg-green"></a>
 </p>
-
-[![pytorch](https://img.shields.io/badge/pytorch-2.0-blue)](https://pytorch.org/get-started/previous-versions/)
-[![cuda](https://img.shields.io/badge/cuda-11.7-orange)](https://developer.nvidia.com/cuda-downloads)
 
 <br>
 
