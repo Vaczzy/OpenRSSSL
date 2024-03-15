@@ -12,7 +12,7 @@
 
 Open Source Remote Sensing Self-supervised Learning.
 
-This repository is OPEN, Pull requests are welcome.
+The repository is OPEN, Pull requests are welcome!
 
 ## TODO List
 
