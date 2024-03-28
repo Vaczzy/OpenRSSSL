@@ -7,7 +7,7 @@
     <a href="https://developer.nvidia.com/cuda-downloads"><img src="https://img.shields.io/badge/cuda-11.7~11.8-orange"></a>
     <a href="https://github.com/facebookresearch/vissl"><img src="https://img.shields.io/badge/vissl-0.1.5-yellow"></a>
     <a href="https://github.com/open-mmlab/mmsegmentation"><img src="https://img.shields.io/badge/mmseg-red"></a>
-    <a href="https://img.shields.io/github/license/Vaczzy/OpenRSSSL"><img src="https://img.shields.io/badge/License-MIT-green.svg">
+    <a href="https://img.shields.io/github/license/Vaczzy/OpenRSSSL"><img src="https://img.shields.io/badge/License-MIT-green.svg"></a>
 </p>
 <br>
 
