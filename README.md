@@ -4,44 +4,42 @@
 
 <p align="center">
     <a href="https://pytorch.org/get-started/previous-versions/"><img src="https://img.shields.io/badge/pytorch-2.0-blue"></a>
-    <a href="https://developer.nvidia.com/cuda-downloads"><img src="https://img.shields.io/badge/cuda-11.7-orange"></a>
+    <a href="https://developer.nvidia.com/cuda-downloads"><img src="https://img.shields.io/badge/cuda-11.7~11.8-orange"></a>
     <a href="https://github.com/facebookresearch/vissl"><img src="https://img.shields.io/badge/vissl-0.1.5-yellow"></a>
     <a href="https://github.com/open-mmlab/mmsegmentation"><img src="https://img.shields.io/badge/mmseg-red"></a>
+    <a href="https://img.shields.io/github/license/Vaczzy/OpenRSSSL"><img src="https://img.shields.io/badge/License-MIT-green.svg">
 </p>
 <br>
 
-Open Source Remote Sensing Self-supervised Learning.
+Open Source Remote Sensing Self-Supervised Learning.
 
 The repository is OPEN, Pull requests are welcome!
 
 ## TODO List
 
-- [x] Create stable VISSL version
-- [x] Simplify installation process
-- [ ] Complete the Pretrain process
+- [x] Create Stable VISSL Version
+- [x] Simplify Installation Process
+- [ ] Reduced Dependency Package
+- [ ] Complete the Pretrain Process
 - [ ] Add Remote Sensing Image Segmentation Code
 - [ ] Add Remote Sensing Image Classfication Code
 - [ ] Add Remote Sensing Image Object Detection Code
-- [ ] Create stable OpenRSSSL version
-- [ ] Complete the Whole process: From Pretrain to Specific-Task
+- [ ] Organize the Code with LangChain Style
+- [ ] Create stable OpenRSSSL Version
+- [ ] Complete the Whole Process: From Pretrain to Specific-Task
 
 ## Version Record
 2024-03-03 openrsssl (alpha version)
 
 ## Installation
 
-1. Create Enviroment
-```
-conda create -n openrsssl_env python=3.8
-conda activate openrsssl_env
-```
-2. Install PyTorch
+1. Install PyTorch
 ```
 conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.7 -c pytorch -c nvidia
 ```
 Or Visit [Pytorch](https://pytorch.org/) to install
 
-3. Install Apex(optional)
+2. Optional: Install Apex
 ```
 pip install packaging
 git clone --recursive https://www.github.com/NVIDIA/apex
@@ -49,12 +47,12 @@ cd apex
 python3 setup.py install
 ```
 
-4. Install OpenRSSSL
+3. Install OpenRSSSL
 
 Download OpenRSSSL source code and switch to the source path for installation:
 
 ```
-git clone --recursive https://github.com/Vaczzy/OpenRSSSL.git
+git clone https://github.com/Vaczzy/OpenRSSSL.git
 cd OpenRSSSL
 pip install --progress-bar off -r requirements.txt
 pip install classy-vision@https://github.com/Vaczzy/ClassyVision/tarball/master
