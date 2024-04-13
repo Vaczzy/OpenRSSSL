@@ -19,12 +19,13 @@ The repository is OPEN, Pull requests are welcome!
 
 - [x] Create Stable VISSL Version
 - [x] Simplify Installation Process
-- [ ] Reduced Dependency Package
+- [x] Reduced Dependency Package
 - [ ] Complete the Pretrain Process
 - [ ] Add Remote Sensing Image Segmentation Code
 - [ ] Add Remote Sensing Image Classfication Code
 - [ ] Add Remote Sensing Image Object Detection Code
 - [ ] Organize the Code with LangChain Style
+- [ ] Create Web Page
 - [ ] Create stable OpenRSSSL Version
 - [ ] Complete the Whole Process: From Pretrain to Specific-Task
 
@@ -33,15 +34,13 @@ The repository is OPEN, Pull requests are welcome!
 
 ## Installation
 
-1. Install PyTorch
+1. Install [Pytorch](https://pytorch.org/)
 ```
 conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.7 -c pytorch -c nvidia
 ```
-Or Visit [Pytorch](https://pytorch.org/) to install
 
 2. Optional: Install Apex
 ```
-pip install packaging
 git clone --recursive https://www.github.com/NVIDIA/apex
 cd apex
 python3 setup.py install
@@ -50,19 +49,10 @@ python3 setup.py install
 3. Install OpenRSSSL
 
 Download OpenRSSSL source code and switch to the source path for installation:
-
 ```
-git clone https://github.com/Vaczzy/OpenRSSSL.git
-cd OpenRSSSL
 pip install --progress-bar off -r requirements.txt
 pip install classy-vision@https://github.com/Vaczzy/ClassyVision/tarball/master
 pip install -e .[dev]
-```
-
-## SSL Pretraining
-```
-python tools/run_distributed_engines.py config=pretrain/GraSS/grass_1gpu_resnet_b256.yaml \
-config.DATA.TRAIN.DATASET_NAMES=["loveda_urban"]
 ```
 
 ## Support Self-supervised Method
