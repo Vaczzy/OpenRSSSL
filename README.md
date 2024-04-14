@@ -20,6 +20,7 @@ The repository is OPEN, Pull requests are welcome!
 - [x] Create Stable VISSL Version
 - [x] Simplify Installation Process
 - [x] Reduced Dependency Package
+- [ ] Add Actions
 - [ ] Complete the Pretrain Process
 - [ ] Add Remote Sensing Image Segmentation Code
 - [ ] Add Remote Sensing Image Classfication Code
