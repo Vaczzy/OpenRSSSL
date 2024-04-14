@@ -40,7 +40,7 @@ The repository is OPEN, Pull requests are welcome!
 conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.7 -c pytorch -c nvidia
 ```
 
-2. Optional: Install Apex
+2. Optional: Install Apex from source
 ```
 git clone --recursive https://www.github.com/NVIDIA/apex
 cd apex
