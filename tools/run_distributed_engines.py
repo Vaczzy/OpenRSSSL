@@ -58,5 +58,6 @@ if __name__ == "__main__":
     overrides = sys.argv[1:]
     assert is_hydra_available(), "Make sure to install hydra"
 
-    overrides.append("config=pretrain/grass/grass_1gpu_resnet_b256.yaml")
+    # overrides.append("config=pretrain/grass/grass_1gpu_resnet_b256.yaml")
+    overrides.append("config=pretrain/simclr/simclr_test.yaml")
     hydra_main(overrides=overrides)

@@ -9,11 +9,12 @@ from typing import Any, Dict, Iterable, List, Union
 
 import torch
 import torch.nn as nn
+from classy_vision.models import ClassyModel, register_model
 from classy_vision.models import ClassyModel, ClassyModelHeadExecutorWrapper
 from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
 from vissl.config import AttrDict
 from vissl.data.collators.collator_helper import MultiDimensionalTensor
-from vissl.models import register_model
+# from vissl.models import register_model
 from vissl.models.heads import get_model_head, SwAVPrototypesHead
 from vissl.models.model_helpers import (
     get_trunk_output_feature_names,
@@ -25,7 +26,7 @@ from vissl.models.trunks.feature_extractor import FeatureExtractorModel
 from vissl.utils.checkpoint import (
     CheckpointLoader,
     init_model_from_consolidated_weights,
-    should_init_head_weights,
+    # should_init_head_weights,
 )
 from vissl.utils.env import get_machine_local_and_dist_rank
 from vissl.utils.fsdp_utils import fsdp_recursive_reset_lazy_init

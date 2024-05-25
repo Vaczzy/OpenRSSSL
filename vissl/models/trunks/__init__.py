@@ -58,4 +58,4 @@ def get_model_trunk(name: str):
 
 
 # automatically import any Python files in the trunks/ directory
-import_all_modules(FILE_ROOT, "vissl.models.trunks")
+# import_all_modules(FILE_ROOT, "vissl.models.trunks")
