@@ -5,28 +5,49 @@
 
 import copy
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List, Union
 
 import torch
 import torch.nn as nn
-from classy_vision.models import ClassyModel, register_model
+from classy_vision.models import ClassyModel, ClassyModelHeadExecutorWrapper
 from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
 from vissl.config import AttrDict
 from vissl.data.collators.collator_helper import MultiDimensionalTensor
-from vissl.models.heads import get_model_head
+from vissl.models import register_model
+from vissl.models.heads import get_model_head, SwAVPrototypesHead
 from vissl.models.model_helpers import (
     get_trunk_output_feature_names,
     is_feature_extractor_model,
 )
+from vissl.models.multiple_input_mapping import MultipleInputMapping
 from vissl.models.trunks import get_model_trunk
 from vissl.models.trunks.feature_extractor import FeatureExtractorModel
 from vissl.utils.checkpoint import (
     CheckpointLoader,
     init_model_from_consolidated_weights,
+    should_init_head_weights,
 )
 from vissl.utils.env import get_machine_local_and_dist_rank
 from vissl.utils.fsdp_utils import fsdp_recursive_reset_lazy_init
 from vissl.utils.misc import set_torch_seed
+
+
+class VisslClassyModelHeadExecutorWrapper(ClassyModelHeadExecutorWrapper):
+    """
+    Temporary fix for ClassyVision:
+    - ClassyModel overrides via meta class the __setattr__ and __getattr__
+      but the __delattr__ is not overridden
+    - This leads to a crash when wrapping a model with FSDP because FSDP
+      uses extensively setattr, getattr, hasattr and delattr
+    - This also leads to asymmetries in which hasattr will return True but
+      delattr will crash
+    """
+
+    def __delattr__(self, name):
+        if name not in ["classy_model", "forward"] and hasattr(self, "classy_model"):
+            delattr(self.classy_model, name)
+        else:
+            super().__delattr__(name)
 
 
 @register_model("multi_input_output_model")
@@ -54,6 +75,9 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         function for details.
     """
 
+    # Temporary fix around ClassyVision to support delattr property
+    wrapper_cls = VisslClassyModelHeadExecutorWrapper
+
     def __init__(self, model_config, optimizer_config):
         self.model_config = model_config
         self.optimizer_config = optimizer_config
@@ -65,7 +89,7 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         self.head_names = []
         self._output_feature_names = get_trunk_output_feature_names(self.model_config)
         self._get_heads()
-        self._setup_multi_input_head_mapping()
+        self.multi_input_mapping = MultipleInputMapping.from_config(self.model_config)
 
     def multi_input_with_head_mapping_forward(self, batch):
         """
@@ -73,16 +97,22 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         output on all inputs as a list.
         """
         all_outputs = []
-        for input_idx in range(len(self.model_config.MULTI_INPUT_HEAD_MAPPING)):
-            input_key = self.model_config.MULTI_INPUT_HEAD_MAPPING[input_idx][0]
-            # heads that are used for this input
-            heads = self._input_to_head_map[input_key]
-            feature_names = self._input_to_eval_features_map[input_key]
-            outputs = self.single_input_forward(batch[input_key], feature_names, heads)
-            if len(outputs) == 1:
-                # single head. do not make nested list
-                outputs = outputs[0]
-            all_outputs.append(outputs)
+        for input_key in self.multi_input_mapping.input_keys:
+            if input_key in batch:
+                head = self.heads[self.multi_input_mapping.head_index[input_key]]
+                feat_names = self.multi_input_mapping.feat_names[input_key]
+                additional_data = {
+                    key: batch[key]
+                    for key in self.multi_input_mapping.additional_keys[input_key]
+                    if key in batch
+                }
+                outputs = self.single_input_forward(
+                    batch[input_key], feat_names, [head], **additional_data
+                )
+                if len(outputs) == 1:
+                    # single head. do not make nested list
+                    outputs = outputs[0]
+                all_outputs.append(outputs)
         return all_outputs
 
     def multi_res_input_forward(self, batch, feature_names):
@@ -109,6 +139,7 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         if self.model_config.SINGLE_PASS_EVERY_CROP:
             idx_crops = torch.Tensor(list(range(1, 1 + len(batch)))).int()
         for end_idx in idx_crops:
+            # TODO - factorize with "single_input_forward"
             feat = self.trunk(torch.cat(batch[start_idx:end_idx]), feature_names)
             start_idx = end_idx
             assert len(feat) == 1
@@ -116,7 +147,13 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         feats = [torch.cat(feats)]
         return self.heads_forward(feats, self.heads)
 
-    def single_input_forward(self, batch, feature_names, heads):
+    def single_input_forward(
+        self,
+        batch: Union[torch.Tensor, MultiDimensionalTensor],
+        feature_names: List[str],
+        heads: Union[nn.ModuleList, Iterable[nn.Module]],
+        **kwargs,
+    ):
         """
         Simply run the trunk and heads forward on the input tensor. We run the trunk
         first and then the heads on the trunk output.
@@ -124,10 +161,7 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         of the trunk.
         """
         assert isinstance(batch, (torch.Tensor, MultiDimensionalTensor)), type(batch)
-        
-        grad_target_f,feats = self.trunk(batch, feature_names)
-        feats=[feats]
-
+        feats = self.trunk(batch, feature_names, **kwargs)
         # if we are interested in evaluating the trunk only, we return the output of the trunk
         # and don't forward through the heads
         if (
@@ -137,8 +171,7 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
             ]
         ):
             return feats
-        
-        return self.heads_forward(feats, heads),grad_target_f  
+        return self.heads_forward(feats, heads)
 
     def heads_forward(self, feats, heads):
         """
@@ -172,9 +205,11 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         Main forward of the model. Depending on the model type the calls are patched
         to the suitable function.
         """
-        if len(self.model_config.MULTI_INPUT_HEAD_MAPPING) > 0:
-            # this model accepts multiple types of inputs and a separate
-            # head is applied to each model output of a given input.
+
+        # Used for PIRL / iBOT:
+        # this model accepts multiple types of inputs and a separate
+        # trunk config or head is applied to each model output of a given input
+        if self.multi_input_mapping is not None:
             return self.multi_input_with_head_mapping_forward(batch)
 
         if isinstance(batch, list):
@@ -343,58 +378,6 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
             self.heads.append(head)
             self.head_names.append(head_name)
 
-    def _setup_multi_input_head_mapping(self):
-        """
-        Used for PIRL style training where the model operates
-        on image and the patches.
-
-        Assumptions:
-        - This assumes that the same trunk is used to extract features
-          for the different types of inputs.
-        - One head only operates on one kind of input, Every individual
-          head can contain several layers. See _get_heads() function for examples.
-
-        * Specify Input -> Trunk Features mapping
-           Like in the single input case, the heads can operate on features
-           from different layers. In this case, we specify MODEL.MULTI_INPUT_HEAD_MAPPING
-           to be a list like:
-           [
-               ["input_key", [list of features heads is applied on]]
-           ]
-           For example: for a model that applies two heads on images
-                        and one head on patches
-                        [
-                            ["images", ["res5", "res4"]],
-                            ["patches", ["res3"]],
-                        ]
-        """
-        if len(self.model_config.MULTI_INPUT_HEAD_MAPPING) == 0:
-            return
-
-        assert len(self.model_config.MULTI_INPUT_HEAD_MAPPING) == len(
-            self.heads
-        ), "MULTI_INPUT_HEAD_MAPPING must be a list of length == #heads"
-
-        # create many-to-one mapping from input_key to head
-        self._input_to_head_map = {}
-        for idx in range(len(self.model_config.MULTI_INPUT_HEAD_MAPPING)):
-            key = self.model_config.MULTI_INPUT_HEAD_MAPPING[idx][0]
-            if key not in self._input_to_head_map:
-                self._input_to_head_map[key] = []
-            self._input_to_head_map[key].append(self.heads[idx])
-
-        # create many-to-one mapping from input key to eval features
-        self._input_to_eval_features_map = {}
-        for input_idx in range(len(self.model_config.MULTI_INPUT_HEAD_MAPPING)):
-            key = self.model_config.MULTI_INPUT_HEAD_MAPPING[input_idx][0]
-            eval_layer_names = self.model_config.MULTI_INPUT_HEAD_MAPPING[input_idx][1]
-            if key in self._input_to_eval_features_map:
-                raise ValueError(
-                    f"duplicate key {key} \
-                    specified for MODEL.MULTI_INPUT_HEAD_MAPPING."
-                )
-            self._input_to_eval_features_map[key] = eval_layer_names
-
     def get_classy_state(self, deep_copy=False):
         """
         Return the model state (trunk + heads) to checkpoint.
@@ -420,12 +403,17 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
                 head.local_state_dict() if isinstance(head, FSDP) else head.state_dict()
                 for head in self.heads
             ]
+            heads_metadata_dict = [
+                head.local_metadata_dict() if isinstance(head, FSDP) else {}
+                for head in self.heads
+            ]
         else:
             heads_state_dict = self.heads.state_dict()
+            heads_metadata_dict = []
 
         model_state_dict = {
             "model": {"trunk": trunk_state_dict, "heads": heads_state_dict},
-            "meta": {"trunk": trunk_metadata_dict},
+            "meta": {"trunk": trunk_metadata_dict, "heads": heads_metadata_dict},
         }
         if deep_copy:
             model_state_dict = copy.deepcopy(model_state_dict)
@@ -478,7 +466,8 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         if isinstance(self.trunk, FSDP) or any(
             isinstance(head, FSDP) for head in self.heads
         ):
-            return  # TODO (Quentin) - log the weights of the loaded shard
+            # TODO (Quentin) - log the weights of the loaded shard
+            return
 
         if self.local_rank == 0:
             trunk_state_dict, heads_state_dict = (
@@ -503,7 +492,7 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
             )
 
     def init_model_from_weights_params_file(
-        self, config: AttrDict, checkpoint: Dict[str, Any]
+        self, config: AttrDict, checkpoint: Dict[str, Any], strict: bool = False
     ):
         """
         We initialize the weights from this checkpoint. However, we don't care
@@ -511,29 +500,38 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
         So the method only reads the state_dict
         """
 
-        # TODO (Quentin) - support: different number of nodes + different checkpoint
-        # formats + fine tuning
-        # Special cases in which we want to evaluate a model trained with FSDP:
-        # - we need to benchmark it in FSDP mode as well and with the same number of
-        #   workers
-        # - we need to have it trained with VISSL (no support for other checkpoint
-        #   types for now)
+        # Specific case for FSDP trunks:
+        # - models have to be created with VISSL
+        # - checkpoints have to be created with VISSL
         if isinstance(self.trunk, FeatureExtractorModel) and isinstance(
             self.trunk.base_model, FSDP
         ):
+            # Linear evaluation / extraction from FSDP models:
+            # - load the trunk (complete strict load)
+            # - load the head (optional and partial load supported)
+            logging.info("Loading FSDP trunk in extraction mode")
             CheckpointLoader.init_fsdp_model_from_weights(
                 self.trunk.base_model,
                 checkpoint,
                 weights_path=["classy_state_dict", "base_model", "model", "trunk"],
             )
             fsdp_recursive_reset_lazy_init(self.trunk.base_model)
+            if should_init_head_weights(config.MODEL):
+                self._init_fsdp_model_heads_from_weights_params_file(checkpoint)
+
         elif isinstance(self.trunk, FSDP):
+            # Fine-tuning of FSDP models:
+            # - load the trunk (complete strict load)
+            # - load the head (optional and partial load supported)
+            logging.info("Loading FSDP trunk")
             CheckpointLoader.init_fsdp_model_from_weights(
                 self.trunk,
                 checkpoint,
                 weights_path=["classy_state_dict", "base_model", "model", "trunk"],
             )
             fsdp_recursive_reset_lazy_init(self.trunk)
+            if should_init_head_weights(config.MODEL):
+                self._init_fsdp_model_heads_from_weights_params_file(checkpoint)
 
         # General case: support for multiple format of checkpoint
         else:
@@ -550,7 +548,23 @@ class BaseSSLMultiInputOutputModel(ClassyModel):
                 skip_layers=skip_layers,
                 replace_prefix=replace_prefix,
                 append_prefix=append_prefix,
+                strict=strict,
             )
+
+    def _init_fsdp_model_heads_from_weights_params_file(
+        self, checkpoint: Dict[str, Any]
+    ):
+        for i, head in enumerate(self.heads):
+            logging.info(f"Loading FSDP head {i}")
+            if isinstance(head, FSDP):
+                CheckpointLoader.init_fsdp_model_from_weights(
+                    head,
+                    checkpoint,
+                    weights_path=["classy_state_dict", "base_model", "model", "heads"],
+                    strict=False,
+                    head_index=i,
+                )
+                fsdp_recursive_reset_lazy_init(head)
 
     def is_clustering_model(self):
         """

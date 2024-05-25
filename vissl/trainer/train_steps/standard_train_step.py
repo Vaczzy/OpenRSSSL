@@ -89,8 +89,8 @@ def construct_sample_for_model(batch_data, task):
 
     return sample
 
-@register_train_step("FALSE_train_step")
-def FALSE_train_step(task):
+@register_train_step("standard_train_step")
+def standard_train_step(task):
     """
     Single training iteration loop of the model.
 
