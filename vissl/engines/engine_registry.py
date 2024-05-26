@@ -27,8 +27,7 @@ class Engine(abc.ABC):
         local_rank: int = 0,
         node_id: int = 0,
         hook_generator: Callable[[Any], List[ClassyHook]] = default_hook_generator,
-    ):
-        ...
+    ): ...
 
 
 _ENGINE_REGISTRY = {}
@@ -70,6 +69,7 @@ def get_engine(engine_name: str) -> Engine:
 
     cls = _ENGINE_REGISTRY[engine_name]
     return cls()
+
 
 def run_engine(
     engine_name: str,

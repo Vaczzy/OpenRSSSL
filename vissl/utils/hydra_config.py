@@ -1,17 +1,24 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
+import contextlib
+
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-
+import copy
 import logging
+import math
+import os
 import pprint
+import re
 import sys
-from typing import Any, List
+from typing import Any, List, NamedTuple, Tuple
 
 import torch
-from omegaconf import DictConfig, OmegaConf
+from hydra.core.override_parser.overrides_parser import OverridesParser
+from omegaconf import DictConfig, OmegaConf, open_dict
 from vissl.config import AttrDict, check_cfg_version
 from vissl.utils.io import save_file
+from vissl.utils.misc import is_augly_available
 
 
 def save_attrdict_to_disk(cfg: AttrDict):
@@ -21,7 +28,56 @@ def save_attrdict_to_disk(cfg: AttrDict):
     save_file(cfg.to_dict(), yaml_output_file)
 
 
-def convert_to_attrdict(cfg: DictConfig, cmdline_args: List[Any] = None):
+class SweepHydraOverrides(NamedTuple):
+    overrides: List[Any]
+    sweeps: List[List[Any]]
+
+    @classmethod
+    def from_overrides(cls, cli_overrides: List[Any]) -> "SweepHydraOverrides":
+        """
+        Takes an override list and separate the overrides describing
+        parameter sweeps from the rest of the overrides.
+
+        Then use those sweeping overrides to generate all possible
+        parameter sweep thought grid search.
+
+        Outputs 2 lists:
+        - the non sweep overrides
+        - all possible sweep combinations
+        """
+
+        # Separate the normal overrides from the sweep ones
+        overrides = []
+        sweep_overrides = []
+        parser = OverridesParser.create()
+        parsed_overrides = parser.parse_overrides(overrides=cli_overrides)
+        for parsed_override in parsed_overrides:
+            if parsed_override.is_sweep_override():
+                sweep_overrides.append(parsed_override)
+            else:
+                overrides.append(parsed_override.input_line)
+
+        # If not parameter sweep specified, return early
+        if not sweep_overrides:
+            return SweepHydraOverrides(overrides=overrides, sweeps=[])
+
+        # Generate all combinations of sweeps
+        sweeps = [[]]
+        for parsed_override in sweep_overrides:
+            key = parsed_override.key_or_group
+            prev_sweeps = sweeps
+            sweeps = []
+            for combination in prev_sweeps:
+                for value in parsed_override.value().list:
+                    sweeps.append(combination + [f"{key}={value}"])
+
+        # Return parameters to schedule the hyper-parameter sweep
+        return SweepHydraOverrides(overrides=overrides, sweeps=sweeps)
+
+
+def convert_to_attrdict(
+    cfg: DictConfig, cmdline_args: List[Any] = None, dump_config: bool = True
+):
     """
     Given the user input Hydra Config, and some command line input options
     to override the config file:
@@ -42,6 +98,15 @@ def convert_to_attrdict(cfg: DictConfig, cmdline_args: List[Any] = None):
         # merge the command line args with config
         cfg = OmegaConf.merge(cfg, cli_conf)
 
+    # Completion of the "defaults.yaml" for the teacher model used for distillation
+    # This avoids repeating the same default options in both:
+    # - config.MODEL
+    # - cfg.config.DISTILLATION.TEACHER_MODEL
+    base_model = copy.deepcopy(cfg.config.MODEL)
+    with open_dict(base_model):
+        base_model.merge_with(cfg.config.DISTILLATION.TEACHER_MODEL)
+        cfg.config.DISTILLATION.TEACHER_MODEL = base_model
+
     # convert the config to AttrDict
     cfg = OmegaConf.to_container(cfg)
     cfg = AttrDict(cfg)
@@ -51,8 +116,9 @@ def convert_to_attrdict(cfg: DictConfig, cmdline_args: List[Any] = None):
 
     # assert the config and infer
     config = cfg.config
-    infer_and_assert_hydra_config(config)
-    save_attrdict_to_disk(config)
+    infer_and_assert_hydra_config(config, cfg.engine_name)
+    if dump_config:
+        save_attrdict_to_disk(config)
     convert_fsdp_dtypes(config)
     return cfg, config
 
@@ -73,12 +139,73 @@ def is_hydra_available():
     Check if Hydra is available. Simply python import to test.
     """
     try:
-        import hydra  # NOQA
 
         hydra_available = True
     except ImportError:
         hydra_available = False
     return hydra_available
+
+
+def get_hydra_version() -> Tuple[int, ...]:
+    import hydra
+
+    return tuple(int(re.findall("\\d+", x)[0]) for x in hydra.__version__.split("."))
+
+
+def assert_hydra_dependency():
+    """
+    Check if Hydra is available. Simply python import to test.
+    Also verifies whether the version is up to date.
+    """
+    min_hydra_version = (1, 0, 7)
+    min_hydra_version_str = ".".join(str(x) for x in min_hydra_version)
+    install_command = f"pip install hydra-core=={min_hydra_version_str}"
+    assert is_hydra_available(), f"Make sure to install Hydra: {install_command}"
+    upgrade_message = f"Please upgrade Hydra: {install_command}"
+    assert get_hydra_version() >= min_hydra_version, upgrade_message
+
+
+@contextlib.contextmanager
+def initialize_hydra_config_module():
+    # Backward compatibility with previous hydra versions:
+    # In Hydra 1.1 and above, the compose API is not experimental anymore
+    if get_hydra_version() >= (1, 1, 0):
+        from hydra import initialize_config_module
+    else:
+        from hydra.experimental import initialize_config_module
+
+    with initialize_config_module(config_module="vissl.config"):
+        yield
+
+
+def hydra_compose(overrides: List[str]):
+    # Backward compatibility with previous hydra versions:
+    # In Hydra 1.1 and above, the compose API is not experimental anymore
+    if get_hydra_version() >= (1, 1, 0):
+        from hydra import compose
+    else:
+        from hydra.experimental import compose
+    return compose("defaults", overrides=overrides)
+
+
+def compose_hydra_configuration(overrides: List[str]):
+    """
+    Transform the list of overrides provided on the command line
+    to an actual VISSL configuration by merging these overrides
+    with the defaults configuration of VISSL
+    """
+    assert_hydra_dependency()
+
+    # Backward compatibility with previous hydra versions:
+    # In Hydra 1.1 and above, the compose API is not experimental anymore
+    if get_hydra_version() >= (1, 1, 0):
+        from hydra import compose, initialize_config_module
+    else:
+        from hydra.experimental import compose, initialize_config_module
+
+    # Compose the overrides with "vissl/config/defaults.yaml"
+    with initialize_config_module(config_module="vissl.config"):
+        return compose("defaults", overrides=overrides)
 
 
 def print_cfg(cfg):
@@ -109,6 +236,7 @@ def resolve_linear_schedule(cfg, param_schedulers):
     """
     # compute what should be the linear warmup start LR value.
     # this depends on batchsize per node.
+    # TODO - why does it not depend on the global batch size?
     num_nodes = cfg.DISTRIBUTED.NUM_NODES
     num_gpus_per_node = cfg.DISTRIBUTED.NUM_PROC_PER_NODE
     bs_per_gpu = cfg.DATA.TRAIN.BATCHSIZE_PER_REPLICA
@@ -249,7 +377,7 @@ def infer_learning_rate(cfg):
 
         scale_factor = float(batch_size) / base_lr_batch_size
         if scaling_type == "sqrt":
-            scale_factor = scale_factor ** 0.5
+            scale_factor = math.pow(scale_factor, 0.5)
         scaled_lr = base_lr * scale_factor
         cfg.OPTIMIZER.param_schedulers.lr = get_scaled_lr_scheduler(
             cfg, param_schedulers, scaled_lr
@@ -280,7 +408,7 @@ def infer_learning_rate(cfg):
 
         scale_factor = float(batch_size) / base_lr_batch_size
         if scaling_type == "sqrt":
-            scale_factor = scale_factor ** 0.5
+            scale_factor = math.pow(scale_factor, 0.5)
         scaled_lr = base_lr * scale_factor
         cfg.OPTIMIZER.param_schedulers.lr_head = get_scaled_lr_scheduler(
             cfg, param_schedulers, scaled_lr
@@ -307,27 +435,12 @@ def infer_losses_config(cfg):
     training in case user forgets to adjust all the parameters.
     """
     train_transforms = cfg.DATA.TRAIN.TRANSFORMS
-    total_num_crops = next(
-        (
-            transform["total_num_crops"]
-            for transform in train_transforms
-            if "total_num_crops" in transform
-        ),
-        None,
-    )
-
-    # our FALSE loss
-    if "false_loss" in cfg.LOSS.name:
-        cfg.LOSS[cfg.LOSS.name]["buffer_params"]["world_size"] = (
-            cfg.DISTRIBUTED.NUM_NODES * cfg.DISTRIBUTED.NUM_PROC_PER_NODE
-        )
-
-        world_size = cfg.LOSS[cfg.LOSS.name]["buffer_params"]["world_size"]
-        batch_size = cfg.DATA.TRAIN.BATCHSIZE_PER_REPLICA
-        num_positives = 2  # false uses 2 copies per image
-        cfg.LOSS[cfg.LOSS.name]["buffer_params"]["effective_batch_size"] = (
-            num_positives * batch_size * world_size
-        )
+    total_num_crops = None
+    multicrop_crops = []
+    for transform in train_transforms:
+        if "total_num_crops" in transform:
+            total_num_crops = transform["total_num_crops"]
+            multicrop_crops = transform["num_crops"]
 
     # some inference for the Info-NCE loss.
     if "simclr_info_nce_loss" in cfg.LOSS.name:
@@ -422,128 +535,61 @@ def infer_losses_config(cfg):
             queue_length // world_size
         )
 
-    # some inference for Simdist loss.
+    # some inference for DINO loss.
     if cfg.LOSS.name == "dino_loss":
         assert len(cfg.MODEL.HEAD.PARAMS) == 1
-        assert cfg.MODEL.HEAD.PARAMS[0][0] == "swav_head"
+        assert cfg.MODEL.HEAD.PARAMS[0][0] in {
+            "swav_head",
+            "dino_head",
+            "dino_head_fsdp",
+        }
         cfg.LOSS.dino_loss.output_dim = cfg.MODEL.HEAD.PARAMS[0][1]["num_clusters"][0]
         cfg.LOSS.dino_loss.num_crops = total_num_crops or cfg.LOSS.dino_loss.num_crops
         cfg.DATA.TRAIN.COLLATE_FUNCTION = "multicrop_collator"
 
+    # some inference for the iBOT loss
+    if cfg.LOSS.name == "ibot_loss":
+        assert cfg.DATA.TRAIN.COLLATE_FUNCTION == "ibot_multicrop_masking_collator"
+        for transform in train_transforms:
+            is_vit = "vision_transformer" in cfg.MODEL.TRUNK.NAME
+            is_mim_transform = transform["name"] == "MaskedImageModeling"
+            if is_mim_transform and is_vit:
+                patch_size = cfg.MODEL.TRUNK.VISION_TRANSFORMERS.PATCH_SIZE
+                transform["patch_size"] = patch_size
+
+        # TODO(IBOT): the "num_clusters" use only works if the head is
+        #  shared between patch and class token (to enhance later)
+        assert len(cfg.MODEL.HEAD.PARAMS) == 1
+        assert cfg.MODEL.HEAD.PARAMS[0][0] in {"ibot_head"}
+        num_clusters = cfg.MODEL.HEAD.PARAMS[0][1]["out_dim"]
+        cfg.LOSS.ibot_loss.out_dim = num_clusters
+        cfg.LOSS.ibot_loss.patch_out_dim = num_clusters
+        cfg.LOSS.ibot_loss.num_epochs = cfg.OPTIMIZER.num_epochs
+        cfg.LOSS.ibot_loss.num_global_crops = multicrop_crops[0]
+        cfg.LOSS.ibot_loss.num_local_crops = total_num_crops - multicrop_crops[0]
+
     return cfg
 
 
-def infer_and_assert_hydra_config(cfg):
+def assert_transforms(cfg):
+    for transforms in [cfg.DATA.TRAIN.TRANSFORMS, cfg.DATA.TEST.TRANSFORMS]:
+        for transform in transforms:
+            if "transform_type" in transform:
+                assert transform["transform_type"] in [None, "augly"]
+
+                if transform["transform_type"] == "augly":
+                    assert is_augly_available(), "Please pip install augly."
+
+
+def infer_fsdp_setup(cfg):
     """
-    Infer values of few parameters in the config file using the value of other config parameters
-    1. Inferring losses
-    2. Auto scale learning rate if user has specified auto scaling to be True.
-    3. Infer meter names (model layer name being evaluated) since we support list meters
-       that have multiple output and same target. This is very common in self-supervised
-       learning where we want to evaluate metric for several layers of the models. VISSL
-       supports running evaluation for multiple model layers in a single training run.
-    4. Support multi-gpu DDP eval model by attaching a dummy parameter. This is particularly
-       helpful for the multi-gpu feature extraction especially when the dataset is large for
-       which features are being extracted.
-    5. Infer what kind of labels are being used. If user has specified a labels source, we set
-       LABEL_TYPE to "standard" (also vissl default), otherwise if no label is specified, we
-       set the LABEL_TYPE to "sample_index".
+    inference for the FSDP settings. Conditions are:
+    1) use the FSDP task
+    2) use the single param group in the optimizer
+    3) if AMP is used, it must be PyTorch AMP
+    4) If training SwAV, we automatically set the head to SwAV FSDP head
+    4) Inference for the FSDP parameters to ensure the good convergence
     """
-    cfg = infer_losses_config(cfg)
-    cfg = infer_learning_rate(cfg)
-
-    # pass the seed to cfg["MODEL"] so that model init on different nodes can
-    # use the same seed.
-    # TODO (Min): once FSDP supports sync'ing weights from rank 0, we don't need
-    #             this anymore.
-    cfg["MODEL"]["_MODEL_INIT_SEED"] = cfg.SEED_VALUE
-
-    # in case of linear evaluation, we often evaluate several layers at a time. For each
-    # layer, there's a separate accuracy meter. In such case, we want to output the layer
-    # name in the meters output to make it easy to interpret the results. This is
-    # currently only supported for cases where we have linear evaluation.
-    if cfg.METERS is not None:
-        from vissl.models import is_feature_extractor_model
-
-        meter_name = cfg.METERS.get("name", "")
-        valid_meters = ["accuracy_list_meter", "mean_ap_list_meter"]
-        if meter_name:
-            if meter_name in valid_meters and is_feature_extractor_model(cfg.MODEL):
-                cfg.METERS[meter_name]["num_meters"] = len(
-                    cfg.MODEL.FEATURE_EVAL_SETTINGS.LINEAR_EVAL_FEAT_POOL_OPS_MAP
-                )
-                cfg.METERS[meter_name]["meter_names"] = [
-                    item[0]
-                    for item in cfg.MODEL.FEATURE_EVAL_SETTINGS.LINEAR_EVAL_FEAT_POOL_OPS_MAP
-                ]
-
-    # in case of feature evaluation mode, we freeze the trunk. The Feature evaluation mode
-    # is used for the feature extraction of trunk as well. VISSL supports distributed feature
-    # extraction to speed up the extraction time. Since the model needs to be DDP for the
-    # distributed extraction, we need some dummy parameters in the model otherwise model
-    # can't be converted to DDP. So we attach some dummy head to the model.
-    world_size = cfg.DISTRIBUTED.NUM_NODES * cfg.DISTRIBUTED.NUM_PROC_PER_NODE
-    if (
-        cfg.MODEL.FEATURE_EVAL_SETTINGS.EVAL_MODE_ON
-        and cfg.MODEL.FEATURE_EVAL_SETTINGS.FREEZE_TRUNK_ONLY
-        and cfg.MODEL.FEATURE_EVAL_SETTINGS.EXTRACT_TRUNK_FEATURES_ONLY
-        and world_size > 1
-        and len(cfg.MODEL.HEAD.PARAMS) == 0
-    ):
-        cfg.MODEL.HEAD.PARAMS = [["mlp", {"dims": [2048, 1000]}]]
-
-    # in SSL, during pre-training we don't want to use annotated labels or during feature
-    # extraction, we don't have annotated labels for some datasets. In such cases, we set
-    # the label type to be just the image index in the dataset, unless the
-    # user has specifically provided "zero" as the label type, which is
-    # necessary when the CutMixUp collator is being used for self-supervised
-    # training.
-    if len(cfg.DATA.TRAIN.LABEL_SOURCES) == 0 and cfg.DATA.TRAIN.LABEL_TYPE != "zero":
-        cfg.DATA.TRAIN.LABEL_TYPE = "sample_index"
-    if len(cfg.DATA.TEST.LABEL_SOURCES) == 0 and cfg.DATA.TEST.LABEL_TYPE != "zero":
-        cfg.DATA.TEST.LABEL_TYPE = "sample_index"
-
-    # if the user has specified the model initialization from a params_file, we check if
-    # the params_file is a url. If it is, we download the file to a local cache directory
-    # and use that instead
-    from vissl.utils.checkpoint import get_checkpoint_folder
-    from vissl.utils.io import cache_url, is_url
-
-    if is_url(cfg.MODEL.WEIGHTS_INIT.PARAMS_FILE):
-        checkpoint_dir = get_checkpoint_folder(cfg)
-        cache_dir = f"{checkpoint_dir}/params_file_cache/"
-        cached_url_path = cache_url(
-            url=cfg.MODEL.WEIGHTS_INIT.PARAMS_FILE, cache_dir=cache_dir
-        )
-        cfg.MODEL.WEIGHTS_INIT.PARAMS_FILE = cached_url_path
-
-    # ZeRO2: Infer the settings for ShardedDDP which shards the optimizer state
-    # and the model weights. For ShardedDDP, we must use the OSS optimizer,
-    # set the right task name, use the PyTorch AMP if AMP is used.
-    if cfg.MODEL.SHARDED_DDP_SETUP.USE_SDP:
-        cfg.OPTIMIZER.use_zero = True
-        cfg.TRAINER.TASK_NAME = "self_supervision_sdp_task"
-        if cfg.MODEL.AMP_PARAMS.USE_AMP:
-            cfg.MODEL.AMP_PARAMS.AMP_TYPE = "pytorch"
-
-    # if we use a zero optimizer, we nest the optimizer related settings under the
-    # base_optimizer.
-    if cfg.OPTIMIZER.use_zero:
-        cfg.OPTIMIZER["base_optimizer"] = cfg.OPTIMIZER.copy()
-        cfg.OPTIMIZER.name = "zero"
-        del cfg.OPTIMIZER.base_optimizer["param_schedulers"]
-        del cfg.OPTIMIZER.base_optimizer["regularize_bn"]
-        del cfg.OPTIMIZER.base_optimizer["regularize_bias"]
-        del cfg.OPTIMIZER.base_optimizer["num_epochs"]
-        del cfg.OPTIMIZER.base_optimizer["use_zero"]
-        del cfg.OPTIMIZER.base_optimizer["head_optimizer_params"]
-
-    # inference for the FSDP settings. Conditions are:
-    # 1) use the FSDP task
-    # 2) use the single param group in the optimizer
-    # 3) if AMP is used, it must be PyTorch AMP
-    # 4) If training SwAV, we automatically set the head to SwAV FSDP head
-    # 4) Inference for the FSDP parameters to ensure the good convergence
     if cfg.MODEL.FSDP_CONFIG.AUTO_SETUP_FSDP:
         cfg.TRAINER.TASK_NAME = "self_supervision_fsdp_task"
         cfg.OPTIMIZER.construct_single_param_group_only = True
@@ -601,9 +647,152 @@ def infer_and_assert_hydra_config(cfg):
     # to FSDP from fairscale which doesn't know about AUTO_SETUP_FSDP
     del cfg.MODEL.FSDP_CONFIG["AUTO_SETUP_FSDP"]
     del cfg.MODEL.FSDP_CONFIG["AMP_TYPE"]
-    logging.info(f"Using the FSDP config: {cfg.MODEL.FSDP_CONFIG}")
+
+    return cfg
+
+
+def infer_and_assert_hydra_config(cfg, engine_name: str):
+    """
+    Infer values of few parameters in the config file using the value of other config parameters
+    1. Inferring losses
+    2. Auto scale learning rate if user has specified auto scaling to be True.
+    3. Infer meter names (model layer name being evaluated) since we support list meters
+       that have multiple output and same target. This is very common in self-supervised
+       learning where we want to evaluate metric for several layers of the models. VISSL
+       supports running evaluation for multiple model layers in a single training run.
+    4. Support multi-gpu DDP eval model by attaching a dummy parameter. This is particularly
+       helpful for the multi-gpu feature extraction especially when the dataset is large for
+       which features are being extracted.
+    5. Infer what kind of labels are being used. If user has specified a labels source, we set
+       LABEL_TYPE to "standard" (also vissl default), otherwise if no label is specified, we
+       set the LABEL_TYPE to "sample_index".
+    """
+    cfg = infer_losses_config(cfg)
+    cfg = infer_learning_rate(cfg)
+    assert_transforms(cfg)
+
+    # pass the seed to cfg["MODEL"] so that model init on different nodes can
+    # use the same seed.
+    # TODO (Min): once FSDP supports sync'ing weights from rank 0, we don't need
+    #             this anymore.
+    cfg["MODEL"]["_MODEL_INIT_SEED"] = cfg.SEED_VALUE
+    cfg["DISTILLATION"]["TEACHER_MODEL"]["_MODEL_INIT_SEED"] = cfg.SEED_VALUE
+
+    # in case of linear evaluation, we often evaluate several layers at a time. For each
+    # layer, there's a separate accuracy meter. In such case, we want to output the layer
+    # name in the meters output to make it easy to interpret the results. This is
+    # currently only supported for cases where we have linear evaluation.
+    if cfg.METERS is not None:
+        from vissl.models import is_feature_extractor_model
+
+        # Ensure backwards compatibility of cfg.METERS.name.
+        meter_name = cfg.METERS.get("name", "")
+        if meter_name:
+            meter_names = set(cfg.METERS.get("names", []))
+            meter_names.add(meter_name)
+            cfg.METERS.names = list(meter_names)
+
+        meter_names = cfg.METERS.get("names", [])
+        valid_meters = [
+            "accuracy_list_meter",
+            "mean_ap_list_meter",
+            "precision_at_k_list_meter",
+            "recall_at_k_list_meter",
+        ]
+
+        for meter_name in meter_names:
+            if meter_name in valid_meters:
+                feat_eval_ops_map = (
+                    cfg.MODEL.FEATURE_EVAL_SETTINGS.LINEAR_EVAL_FEAT_POOL_OPS_MAP
+                )
+                all_meter_names = [item[0] for item in feat_eval_ops_map]
+                if is_feature_extractor_model(cfg.MODEL):
+                    cfg.METERS[meter_name]["num_meters"] = len(feat_eval_ops_map)
+                    cfg.METERS[meter_name]["meter_names"] = all_meter_names
+                elif engine_name == "extract_label_predictions":
+                    if len(feat_eval_ops_map) > 0:
+                        cfg.METERS[meter_name]["num_meters"] = len(feat_eval_ops_map)
+                        cfg.METERS[meter_name]["meter_names"] = all_meter_names
+                    else:
+                        # if user is not extracting from multiple layers, we assume
+                        # the model head is being used.
+                        cfg.METERS[meter_name]["num_meters"] = 1
+
+    # in SSL, during pre-training we don't want to use annotated labels or during feature
+    # extraction, we don't have annotated labels for some datasets. In such cases, we set
+    # the label type to be just the image index in the dataset, unless the
+    # user has specifically provided "zero" as the label type, which is
+    # necessary when the CutMixUp collator is being used for self-supervised
+    # training.
+    if len(cfg.DATA.TRAIN.LABEL_SOURCES) == 0 and cfg.DATA.TRAIN.LABEL_TYPE != "zero":
+        cfg.DATA.TRAIN.LABEL_TYPE = "sample_index"
+    if len(cfg.DATA.TEST.LABEL_SOURCES) == 0 and cfg.DATA.TEST.LABEL_TYPE != "zero":
+        cfg.DATA.TEST.LABEL_TYPE = "sample_index"
+
+    # if the user has specified the model initialization from a params_file, we check if
+    # the params_file is a url. If it is, we download the file to a local cache directory
+    # and use that instead
+    cfg.MODEL.WEIGHTS_INIT.PARAMS_FILE = _download_to_cache_if_url(
+        cfg, cfg.MODEL.WEIGHTS_INIT.PARAMS_FILE
+    )
+    cfg.DISTILLATION.TEACHER_MODEL.WEIGHTS_INIT.PARAMS_FILE = _download_to_cache_if_url(
+        cfg, cfg.DISTILLATION.TEACHER_MODEL.WEIGHTS_INIT.PARAMS_FILE
+    )
+
+    # ZeRO2: Infer the settings for ShardedDDP which shards the optimizer state
+    # and the model weights. For ShardedDDP, we must use the OSS optimizer,
+    # set the right task name, use the PyTorch AMP if AMP is used.
+    if cfg.MODEL.SHARDED_DDP_SETUP.USE_SDP:
+        cfg.OPTIMIZER.use_zero = True
+        cfg.TRAINER.TASK_NAME = "self_supervision_sdp_task"
+        if cfg.MODEL.AMP_PARAMS.USE_AMP:
+            cfg.MODEL.AMP_PARAMS.AMP_TYPE = "pytorch"
+
+    # if we use a zero optimizer, we nest the optimizer related settings under the
+    # base_optimizer.
+    if cfg.OPTIMIZER.use_zero:
+        cfg.OPTIMIZER["base_optimizer"] = cfg.OPTIMIZER.copy()
+        cfg.OPTIMIZER.name = "zero"
+        del cfg.OPTIMIZER.base_optimizer["param_schedulers"]
+        del cfg.OPTIMIZER.base_optimizer["regularize_bn"]
+        del cfg.OPTIMIZER.base_optimizer["regularize_bias"]
+        del cfg.OPTIMIZER.base_optimizer["num_epochs"]
+        del cfg.OPTIMIZER.base_optimizer["use_zero"]
+        del cfg.OPTIMIZER.base_optimizer["head_optimizer_params"]
+
+    # Infer fsdp settings
+    cfg = infer_fsdp_setup(cfg)
 
     if cfg.DATA.TRAIN.BASE_DATASET == "generic_ssl":
         assert (
             cfg.DATA.TRAIN.get("TRAIN_PHASES_PER_EPOCH", 1) == 1
         ), "When using the generic_ssl, we must set TRAIN_PHASES_PER_EPOCH = 1."
+
+    if cfg.METERS.model_output_mask:
+        assert (
+            len(cfg.DATA.TEST.DATA_SOURCES) > 0
+        ), "Model output mask is only applicable when there is a test dataset."
+
+        assert (
+            cfg.DATA.TEST.BASE_DATASET == "generic_ssl"
+        ), "Model output mask is only supported with ssl dataset."
+
+        # Remove CHECK_NAN hooks, as model output masking casts the logits
+        # to -inf, which will throw an error from the CHECK_NAN hooks.
+        cfg.HOOKS.CHECK_NAN = False
+
+    if cfg.HOOKS.EMA_MODEL.ENABLE_EMA_METERS:
+        assert cfg.METERS.get("name", "") or cfg.METERS.get(
+            "names", []
+        ), "Please specify METER.name or METER.names if you are enabling the EMA_MODEL hook."
+
+
+def _download_to_cache_if_url(cfg, file_path: str) -> str:
+    from vissl.utils.checkpoint import get_checkpoint_folder
+    from vissl.utils.io import cache_url, is_url
+
+    if is_url(file_path):
+        checkpoint_dir = get_checkpoint_folder(cfg)
+        cache_dir = os.path.join(checkpoint_dir, "params_file_cache")
+        return cache_url(url=file_path, cache_dir=cache_dir)
+    return file_path

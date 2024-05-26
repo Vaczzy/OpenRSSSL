@@ -2,7 +2,6 @@
 
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-import os
 
 import logging
 from typing import Any, Callable, Dict, Set
@@ -15,7 +14,9 @@ from vissl.data import dataset_catalog
 from vissl.data.data_helper import balanced_sub_sampling, unbalanced_sub_sampling
 from vissl.data.ssl_transforms import get_transform
 from vissl.data.vissl_dataset_base import VisslDatasetBase
+from vissl.utils.checkpoint import get_checkpoint_folder
 from vissl.utils.env import get_machine_local_and_dist_rank
+from vissl.utils.io import save_file
 
 
 def _convert_lbl_to_long(lbl):
@@ -92,7 +93,7 @@ class GenericSSLDataset(VisslDatasetBase):
         self.data_limit = self.cfg["DATA"][split].DATA_LIMIT
         self.data_limit_sampling = self._get_data_limit_sampling(cfg, split)
         self.transform = get_transform(self.cfg["DATA"][split].TRANSFORMS)
-        self._labels_init = False
+        self.labels_init = False
         self._subset_initialized = False
         self.image_and_label_subset = None
         self._verify_data_sources(split, dataset_source_map)
@@ -188,6 +189,16 @@ class GenericSSLDataset(VisslDatasetBase):
                 labels = np.load(fopen, allow_pickle=True)
         return labels
 
+    def _save_label_cls_idx_map(self, cls_idx_map: Dict[str, int], split: str):
+        local_rank, dist_rank = get_machine_local_and_dist_rank()
+        if dist_rank == 0:
+            checkpoint_folder = get_checkpoint_folder(self.cfg)
+            class_idx_file_path = (
+                f"{checkpoint_folder}/{split.lower()}_label_to_index_map.json"
+            )
+            if not g_pathmgr.exists(class_idx_file_path):
+                save_file(cls_idx_map, class_idx_file_path, append_to_json=False)
+
     def _convert_to_numeric_ids(self, labels: np.ndarray) -> np.ndarray:
         """
         VISSL disk_filelist support targets as strings or integers
@@ -198,11 +209,12 @@ class GenericSSLDataset(VisslDatasetBase):
         if isinstance(labels[0], str):
             unique_labels = sorted(set(labels))
             label_to_id = {label: idx for idx, label in enumerate(unique_labels)}
+            self._save_label_cls_idx_map(cls_idx_map=label_to_id, split=self.split)
             return np.array([label_to_id[label] for label in labels])
         else:
             return labels
 
-    def _load_labels(self):
+    def load_labels(self):
         """
         Load the labels if the dataset has labels. In self-supervised
         pre-training task, we don't use labels. However, we use labels for the
@@ -243,13 +255,22 @@ class GenericSSLDataset(VisslDatasetBase):
                 # We do not create it again since it can be an expensive operation.
                 labels = [x[1] for x in self.data_objs[idx].image_dataset.samples]
                 labels = np.array(labels).astype(np.int64)
+                # we save the class-idx-map to the disk here for convenience
+                # so that the prediction labels can be mapped to class names
+                # easily.
+                self._save_label_cls_idx_map(
+                    cls_idx_map=self.data_objs[idx].image_dataset.class_to_idx,
+                    split=self.split,
+                )
             elif label_source == "torchvision_dataset":
                 labels = np.array(self.data_objs[idx].get_labels()).astype(np.int64)
             elif label_source == "synthetic":
-                labels = np.array([0 for _ in range(len(self.data_objs[idx]))])
+                labels = np.array(self.data_objs[idx].get_labels()).astype(np.int64)
             else:
                 raise ValueError(f"unknown label source: {label_source}")
             self.label_objs.append(labels)
+
+        self.labels_init = True
 
     def _can_random_subset_data_sources(self):
         """
@@ -309,17 +330,15 @@ class GenericSSLDataset(VisslDatasetBase):
 
         The final transformed sample is returned to be added into the minibatch.
         """
-
-        if not self._labels_init and len(self.label_sources) > 0:
-            self._load_labels()
-            self._labels_init = True
+        if not self.labels_init and len(self.label_sources) > 0:
+            self.load_labels()
 
         subset_idx = idx
         if self.data_limit >= 0 and self._can_random_subset_data_sources():
             if not self._subset_initialized:
                 self._init_image_and_label_subset()
             subset_idx = self.image_and_label_subset[idx]
-      
+
         # TODO: this doesn't yet handle the case where the length of datasets
         # could be different.
         item = {"data": [], "data_valid": [], "data_idx": []}
@@ -389,7 +408,15 @@ class GenericSSLDataset(VisslDatasetBase):
             if not getattr(source, "get_image_paths", 0):
                 msg = f"Cannot retrieve image paths for source {self.data_sources[i]}"
                 raise ValueError(msg)
-            image_paths.append(source.get_image_paths())
+
+            data_obj_paths = source.get_image_paths()
+            if self.data_limit >= 0 and self._can_random_subset_data_sources():
+                if not self._subset_initialized:
+                    self._init_image_and_label_subset()
+                data_obj_paths = [
+                    data_obj_paths[idx] for idx in self.image_and_label_subset
+                ]
+            image_paths.append(data_obj_paths)
         return image_paths
 
     def get_available_splits(self, dataset_config):

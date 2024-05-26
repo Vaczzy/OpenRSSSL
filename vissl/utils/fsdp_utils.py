@@ -7,8 +7,8 @@ import torch.distributed as dist
 import torch.nn as nn
 from fairscale.nn import auto_wrap, default_auto_wrap_policy, enable_wrap
 from fairscale.nn.data_parallel import (
-    FullyShardedDataParallel as FSDP,
     auto_wrap_bn as fairscale_auto_wrap_bn,
+    FullyShardedDataParallel as FSDP,
 )
 from vissl.config.attr_dict import AttrDict
 
@@ -52,6 +52,26 @@ def fsdp_auto_wrap_bn(module):
     )
 
 
+def is_fsdp_model(model):
+    if isinstance(model, FSDP):
+        return True
+    if hasattr(model, "trunk") and isinstance(model.trunk, FSDP):
+        return True
+    return False
+
+
+def is_valid_fsdp_model(model: FSDP) -> bool:
+    """
+    Checks if a FSDP model is valid by looking at the sub-FSDP modules
+    and ensuring that they do not think they are the root FSDP model
+    """
+    for n, m in model.named_modules():
+        if isinstance(m, FSDP):
+            if n != "" and m._is_root is not None:
+                return False
+    return True
+
+
 def fsdp_wrapper(module, **kwargs):
     """
     Customer FSDP wrapper, adding the missing options
@@ -60,12 +80,13 @@ def fsdp_wrapper(module, **kwargs):
 
     # Add global process group to the list of keys
     fsdp_config = dict(**kwargs)
-    fsdp_config["process_group"] = get_global_group()
+    if "process_group" not in fsdp_config:
+        fsdp_config["process_group"] = get_global_group()
     if fsdp_config.get("_TRACK_COMMUNICATIONS", False):
         fsdp_config["process_group"] = ProcessGroupTracker(fsdp_config["process_group"])
 
     # Remove keys that are not supported in FSDP
-    for key in {"_TRACK_COMMUNICATIONS", "AUTO_WRAP_THRESHOLD"}:
+    for key in {"_TRACK_COMMUNICATIONS", "AUTO_WRAP_THRESHOLD", "FORCE_SYNC_CUDA"}:
         fsdp_config.pop(key, None)
 
     return FSDP(module, **fsdp_config)
@@ -86,7 +107,9 @@ class _BigConvAutoWrapPolicy:
     def __init__(self, threshold: int):
         self.threshold = threshold
 
-    def __call__(self, module: nn.Module, recurse: bool, unwrapped_params: int):
+    def __call__(
+        self, module: nn.Module, recurse: bool, unwrapped_params: int, **kwargs
+    ):
         is_large = unwrapped_params >= self.threshold
         force_leaf_modules = default_auto_wrap_policy.FORCE_LEAF_MODULES
         if recurse:
@@ -105,6 +128,6 @@ def auto_wrap_big_layers(module: nn.Module, fsdp_config: AttrDict):
     with enable_wrap(
         auto_wrap_policy=_BigConvAutoWrapPolicy(fsdp_config.AUTO_WRAP_THRESHOLD),
         wrapper_cls=_FSDP_WRAPPER,
-        **fsdp_config
+        **fsdp_config,
     ):
         return auto_wrap(module)

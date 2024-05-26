@@ -72,8 +72,8 @@ _RANDOM_INTERPOLATION = (Image.BILINEAR, Image.BICUBIC)
 
 
 # Modification/Addition
-@register_transform("RandAugment_src")
-class RandAugment_src(ClassyTransform):
+@register_transform("RandAugment", bypass_checks=True)
+class RandAugment(ClassyTransform):
     """
     Create a RandAugment transform.
     :param magnitude: integer magnitude of rand augment
@@ -96,7 +96,7 @@ class RandAugment_src(ClassyTransform):
         num_layers=2,
         increasing_severity=False,
         weight_choice=None,
-        **kwargs
+        **kwargs,
     ):
         hparams = kwargs
         hparams.update(_HPARAMS_DEFAULT)
@@ -444,9 +444,11 @@ class AugmentOp:
         self.hparams = hparams.copy()
         self.kwargs = {
             "fillcolor": hparams["img_mean"] if "img_mean" in hparams else _FILL,
-            "resample": hparams["interpolation"]
-            if "interpolation" in hparams
-            else _RANDOM_INTERPOLATION,
+            "resample": (
+                hparams["interpolation"]
+                if "interpolation" in hparams
+                else _RANDOM_INTERPOLATION
+            ),
         }
 
         # If magnitude_std is > 0, we introduce some randomness

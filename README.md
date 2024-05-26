@@ -36,8 +36,10 @@ The repository is OPEN, Pull requests are welcome!
 
 ## Installation
 
-1. Install [Pytorch](https://pytorch.org/)
+1. Create Environment and Install [Pytorch](https://pytorch.org/)
 ```
+conda create -n openrsssl_env python=3.8 -y
+conda activate openrsssl_env
 conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.7 -c pytorch -c nvidia
 ```
 

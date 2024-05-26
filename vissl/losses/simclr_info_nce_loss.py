@@ -81,7 +81,7 @@ class SimclrInfoNCECriterion(nn.Module):
 
         self.use_gpu = get_cuda_device_index() > -1
         self.temperature = temperature
-        self.num_pos = 2 # 估计修改一下这里
+        self.num_pos = 2
         self.buffer_params = buffer_params
         self.criterion = nn.CrossEntropyLoss()
         self.dist_rank = get_rank()
@@ -141,12 +141,9 @@ class SimclrInfoNCECriterion(nn.Module):
         # Step 2: matrix multiply: 64 x 128 with 4096 x 128 = 64 x 4096 and
         # divide by temperature.
         similarity = torch.exp(torch.mm(embedding, embeddings_buffer.t()) / T)
-        
-        
         pos = torch.sum(similarity * self.pos_mask, 1)
         neg = torch.sum(similarity * self.neg_mask, 1)
         loss = -(torch.mean(torch.log(pos / (pos + neg))))
-        
         return loss
 
     def __repr__(self):

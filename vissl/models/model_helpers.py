@@ -10,12 +10,14 @@ from enum import Enum
 from typing import Dict, List, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _ntuple
 from torch.utils.checkpoint import checkpoint
 from vissl.data.collators.collator_helper import MultiDimensionalTensor
 from vissl.utils.activation_checkpointing import checkpoint_trunk
+from vissl.utils.env import get_machine_local_and_dist_rank
 from vissl.utils.misc import is_apex_available
 
 
@@ -49,6 +51,23 @@ def transform_model_input_data_type(model_input, input_type: str):
     return model_output
 
 
+def model_output_has_nan(model_output) -> bool:
+    """
+    Model output can be:
+    - a tensor
+    - list of tensors
+    - list of list of tensors
+    """
+    from vissl.losses.cross_entropy_multiple_output_single_target import EnsembleOutput
+
+    if isinstance(model_output, list):
+        return any(model_output_has_nan(x) for x in model_output)
+    elif isinstance(model_output, EnsembleOutput):
+        return not torch.isfinite(model_output.outputs).all()
+    else:
+        return not torch.isfinite(model_output).all()
+
+
 def is_feature_extractor_model(model_config):
     """
     If the model is a feature extractor model:
@@ -58,7 +77,10 @@ def is_feature_extractor_model(model_config):
     """
     return (
         model_config.FEATURE_EVAL_SETTINGS.EVAL_MODE_ON
-        and model_config.FEATURE_EVAL_SETTINGS.FREEZE_TRUNK_ONLY
+        and (
+            model_config.FEATURE_EVAL_SETTINGS.FREEZE_TRUNK_ONLY
+            or model_config.FEATURE_EVAL_SETTINGS.FREEZE_TRUNK_AND_HEAD
+        )
         and len(model_config.FEATURE_EVAL_SETTINGS.LINEAR_EVAL_FEAT_POOL_OPS_MAP) > 0
     )
 
@@ -74,6 +96,12 @@ def get_trunk_output_feature_names(model_config):
         feat_ops_map = model_config.FEATURE_EVAL_SETTINGS.LINEAR_EVAL_FEAT_POOL_OPS_MAP
         feature_names = [item[0] for item in feat_ops_map]
     return feature_names
+
+
+def get_no_ddp_model(model):
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        return model.module
+    return model
 
 
 class Wrap(nn.Module):
@@ -97,6 +125,31 @@ class SyncBNTypes(str, Enum):
 
     apex = "apex"
     pytorch = "pytorch"
+
+
+def split_world_in_process_groups(world_size: int, group_size: int) -> List[List[int]]:
+    """
+    Split the process ids of the worlds (from 0 to world_size-1) into chunks
+    of size bounded by group_size.
+
+    Examples:
+
+        > split_world_in_process_groups(world_size=9, group_size=3)
+        [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+
+        > split_world_in_process_groups(world_size=9, group_size=4)
+        [[0, 1, 2, 3], [4, 5, 6, 7], [8]]
+
+        > split_world_in_process_groups(world_size=15, group_size=4)
+        [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14]]
+
+    """
+    all_groups = []
+    all_ids = list(reversed(range(world_size)))
+    while all_ids:
+        all_groups.append(all_ids[-group_size:][::-1])
+        all_ids = all_ids[:-group_size]
+    return all_groups
 
 
 def convert_sync_bn(config, model):
@@ -161,26 +214,14 @@ def convert_sync_bn(config, model):
             process_group = None
             logging.info("Not creating process_group for PyTorch SyncBN...")
         else:
-            logging.warning(
-                "Process groups not supported with PyTorch SyncBN currently. "
-                "Training will be slow. Please consider using Apex for SyncBN."
+            process_group_ids = split_world_in_process_groups(
+                world_size=config.DISTRIBUTED.NUM_PROC_PER_NODE
+                * config.DISTRIBUTED.NUM_NODES,
+                group_size=group_size,
             )
-            process_group = None
-            # TODO (prigoyal): process groups don't work well with pytorch.
-            # import os
-            # num_gpus_per_node = config.DISTRIBUTED.NUM_PROC_PER_NODE
-            # node_id = int(os.environ["RANK"]) // num_gpus_per_node
-            # assert (
-            #     group_size == num_gpus_per_node
-            # ), "Use group_size=num_gpus per node as interconnect is cheap in a machine"
-            # process_ids = list(
-            #     range(
-            #         node_id * num_gpus_per_node,
-            #         (node_id * num_gpus_per_node) + group_size,
-            #     )
-            # )
-            # logging.info(f"PyTorch SyncBN Node: {node_id} process_ids: {process_ids}")
-            # process_group = torch.distributed.new_group(process_ids)
+            process_groups = [dist.new_group(pids) for pids in process_group_ids]
+            _, dist_rank = get_machine_local_and_dist_rank()
+            process_group = process_groups[dist_rank // group_size]
         return nn.SyncBatchNorm.convert_sync_batchnorm(
             model, process_group=process_group
         )
@@ -297,6 +338,24 @@ def parse_out_keys_arg(
     max_out_feat = max(all_feat_names.index(key) for key in out_feat_keys)
 
     return out_feat_keys, max_out_feat
+
+
+def rearrange(x: torch.Tensor, pattern: str) -> torch.Tensor:
+    """
+    Rearranges a tensor by permuting its inputs based on a pattern
+    provided as input
+
+    Example:
+
+        rearrange(torch.randn(size=(2, 3, 4, 5, 6)), 'n d h w c -> n c d h w').shape
+        > torch.Size([2, 6, 3, 4, 5])
+    """
+    before, after = pattern.split("->")
+    before = before.strip().split(" ")
+    after = after.strip().split(" ")
+    after = [before.index(a) for a in after]
+    assert len(after) == len(before)
+    return x.permute(after)
 
 
 def get_trunk_forward_outputs_module_list(
@@ -418,8 +477,6 @@ def get_trunk_forward_outputs(
     Returns:
         out_feats: a list with the asked output features placed in the same order as in
         `out_feat_keys`.
-
-    # woc,这个函数写的太好了吧qaq
     """
 
     # Sanitize inputs
@@ -429,8 +486,6 @@ def get_trunk_forward_outputs(
     out_feat_keys, max_out_feat = parse_out_keys_arg(
         out_feat_keys, list(feature_blocks.keys())
     )
-    
-    out_feat_keys.append('layer4')
 
     # Forward pass over the trunk
     unique_out_feats = {}
@@ -457,7 +512,7 @@ def get_trunk_forward_outputs(
             for m in filter(lambda x: isinstance(x, _bn_cls), feature_block.modules()):
                 m.track_running_stats = m.training
 
-            feat = checkpoint(feature_block, feat)
+            feat = checkpoint(feature_block, feat, use_reentrant=True)
 
             # Freeze the running stats in any BN layer
             # the checkpointing process will have to do another FW pass
@@ -628,6 +683,9 @@ class DropPath(nn.Module):
 
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training)
+
+    def extra_repr(self) -> str:
+        return "p={}".format(self.drop_prob)
 
 
 to_1tuple = _ntuple(1)

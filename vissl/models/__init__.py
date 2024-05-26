@@ -10,7 +10,7 @@ See #register_model below.
 """
 
 from pathlib import Path
-from vissl.models.base_ssl_model import BaseSSLMultiInputOutputModel
+
 from classy_vision.generic.registry_utils import import_all_modules
 from vissl.models.model_helpers import (  # noqa
     convert_sync_bn,
@@ -66,7 +66,9 @@ def build_model(model_config, optimizer_config):
     The returned model is not copied to gpu yet (if using gpu) and neither
     wrapped with DDP yet. This is done later train_task.py .prepare()
     """
-    return BaseSSLMultiInputOutputModel(model_config, optimizer_config)
+    model_name = model_config.BASE_MODEL_NAME
+    model_cls = get_model(model_name)
+    return model_cls(model_config, optimizer_config)
 
 
 # automatically import any Python files in the models/ directory

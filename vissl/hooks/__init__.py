@@ -3,12 +3,17 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from enum import Enum, auto
+from enum import auto, Enum
 from typing import List
 
 from classy_vision.hooks.classy_hook import ClassyHook
 from vissl.config import AttrDict
+from vissl.hooks.deepclusterv2_hooks import ClusterMemoryHook, InitMemoryHook  # noqa
+from vissl.hooks.dino_hooks import DINOHook
+from vissl.hooks.distillation_hooks import DistillationHook
+from vissl.hooks.ema_hooks import EmaHook
 from vissl.hooks.grad_clip_hooks import GradClipHook  # noqa
+from vissl.hooks.ibot_hooks import IBOTHook
 from vissl.hooks.log_hooks import (  # noqa
     DumpMemoryOnException,
     LogGpuMemoryHook,
@@ -17,18 +22,24 @@ from vissl.hooks.log_hooks import (  # noqa
     LogLossMetricsCheckpointHook,
     LogPerfTimeMetricsHook,
 )
-from vissl.hooks.profiling_hook import ProfilingHook
+from vissl.hooks.moco_hooks import MoCoHook  # noqa
+from vissl.hooks.model_output_mask_hook import ModelOutputMaskHook
+from vissl.hooks.profiling_hook import CudaSynchronizeHook, ProfilingHook
 from vissl.hooks.state_update_hooks import (  # noqa
     CheckNanLossHook,
+    CheckNanModelOutputHook,
     FreezeParametersHook,
     SetDataSamplerEpochHook,
     SSLModelComplexityHook,
-    UpdateBatchesSeenHook,
-    UpdateTestBatchTimeHook,
-    UpdateTrainBatchTimeHook,
-    UpdateTrainIterationNumHook,
 )
-
+from vissl.hooks.swav_hooks import (  # noqa  # noqa
+    NormalizePrototypesHook,
+    SwAVUpdateQueueScoresHook,
+)
+from vissl.hooks.swav_momentum_hooks import (
+    SwAVMomentumHook,
+    SwAVMomentumNormalizePrototypesHook,
+)
 from vissl.hooks.tensorboard_hook import SSLTensorboardHook  # noqa
 from vissl.utils.checkpoint import get_checkpoint_folder
 from vissl.utils.tensorboard import get_tensorboard_hook, is_tensorboard_available
@@ -49,6 +60,38 @@ class SSLClassyHookFunctions(Enum):
     on_phase_end = auto()
     on_end = auto()
     on_exception = auto()
+
+
+def add_loss_hooks(hooks, loss_cfg, cfg):
+    if cfg.LOSS.name == "swav_loss":
+        hooks.extend([SwAVUpdateQueueScoresHook(), NormalizePrototypesHook()])
+    if cfg.LOSS.name == "swav_momentum_loss":
+        hooks.extend(
+            [
+                SwAVMomentumHook(
+                    cfg.LOSS["swav_momentum_loss"]["momentum"],
+                    cfg.LOSS["swav_momentum_loss"]["momentum_eval_mode_iter_start"],
+                    cfg.LOSS["swav_momentum_loss"]["crops_for_assign"],
+                ),
+                SwAVMomentumNormalizePrototypesHook(),
+            ]
+        )
+    if cfg.LOSS.name in {"dino_loss", "msn_loss"}:
+        hooks.append(DINOHook())
+    if cfg.LOSS.name in {"ibot_loss"}:
+        hooks.append(IBOTHook())
+    if cfg.LOSS.name == "deepclusterv2_loss":
+        hooks.extend([InitMemoryHook(), ClusterMemoryHook()])
+    if cfg.LOSS.name == "moco_loss":
+        hooks.extend(
+            [
+                MoCoHook(
+                    cfg.LOSS["moco_loss"]["momentum"],
+                    shuffle_batch=(not cfg.MODEL.SYNC_BN_CONFIG.CONVERT_BN_TO_SYNC_BN),
+                )
+            ]
+        )
+    return hooks
 
 
 def default_hook_generator(cfg: AttrDict) -> List[ClassyHook]:
@@ -76,6 +119,18 @@ def default_hook_generator(cfg: AttrDict) -> List[ClassyHook]:
             else None
         )
         hooks.append(LogPerfTimeMetricsHook(perf_stat_freq))
+
+    # add the loss hooks based on the loss being used
+    if cfg.LOSS.name in {
+        "distillation_loss",
+        "swav_distillation_loss",
+        "dino_distillation_loss",
+        "msn_distillation_loss",
+        "ibot_distillation_loss",
+    }:
+        hooks.append(DistillationHook(cfg.DISTILLATION))
+    hooks = add_loss_hooks(hooks, cfg.LOSS, cfg)
+
     if cfg.HOOKS.MODEL_COMPLEXITY.COMPUTE_COMPLEXITY:
         hooks.extend([SSLModelComplexityHook()])
     if cfg.HOOKS.LOG_GPU_STATS:
@@ -110,22 +165,39 @@ def default_hook_generator(cfg: AttrDict) -> List[ClassyHook]:
         else None
     )
 
+    if CudaSynchronizeHook.is_enabled(cfg.MODEL):
+        hooks.append(CudaSynchronizeHook())
+
     if ProfilingHook.is_enabled(cfg.PROFILING):
         hooks.append(ProfilingHook(profiling_config=cfg.PROFILING))
 
     world_size = cfg.DISTRIBUTED.NUM_NODES * cfg.DISTRIBUTED.NUM_PROC_PER_NODE
     checkpoint_folder = get_checkpoint_folder(cfg)
+
     hooks.extend(
         [
-            CheckNanLossHook(),
             SetDataSamplerEpochHook(),
             FreezeParametersHook(),
-            UpdateBatchesSeenHook(),
-            UpdateTrainBatchTimeHook(),
-            UpdateTestBatchTimeHook(),
-            UpdateTrainIterationNumHook(),
             LogLossMetricsCheckpointHook(world_size),
             LogLossLrEtaHook(checkpoint_folder, rolling_btime_freq),
         ]
     )
+
+    if cfg.METERS.model_output_mask:
+        hooks.extend([ModelOutputMaskHook()])
+
+    if cfg.HOOKS.CHECK_NAN:
+        hooks.extend([CheckNanLossHook(), CheckNanModelOutputHook(world_size)])
+
+    if cfg.HOOKS.EMA_MODEL.ENABLE_EMA_METERS or cfg.HOOKS.EMA_MODEL.SAVE_EMA_MODEL:
+        hooks.extend(
+            [
+                EmaHook(
+                    enable_ema_meters=cfg.HOOKS.EMA_MODEL.ENABLE_EMA_METERS,
+                    update_iter=cfg.HOOKS.EMA_MODEL.UPDATE_ITER,
+                    warmup=cfg.HOOKS.EMA_MODEL.WARMUP,
+                )
+            ]
+        )
+
     return hooks

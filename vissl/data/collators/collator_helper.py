@@ -16,12 +16,12 @@ def _as_tensor(x: Tuple[int, int]) -> torch.Tensor:
     """
     if torch.jit.is_scripting():
         return torch.as_tensor(x)
-    if isinstance(x, (list, tuple)) and all([isinstance(t, torch.Tensor) for t in x]):
+    if isinstance(x, (list, tuple)) and all(isinstance(t, torch.Tensor) for t in x):
         return torch.stack(x)
     return torch.as_tensor(x)
 
 
-class MultiDimensionalTensor(object):
+class MultiDimensionalTensor:
     """
     Structure that holds a list of images (of possibly
     varying sizes) as a single tensor.

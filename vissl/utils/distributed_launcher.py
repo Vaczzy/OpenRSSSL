@@ -85,7 +85,6 @@ def launch_distributed(
     setup_logging(__name__)
     node_id = get_node_id(node_id)
     dist_run_id = get_dist_run_id(cfg, cfg.DISTRIBUTED.NUM_NODES)
-    world_size = cfg.DISTRIBUTED.NUM_NODES * cfg.DISTRIBUTED.NUM_PROC_PER_NODE
 
     # If using gpus, we check that the user has specified <= gpus available on user system.
     if cfg.MACHINE.DEVICE == "gpu":
@@ -123,41 +122,28 @@ def launch_distributed(
     # given training. This ensures that if the same training resumes, then it
     # resumes from the checkpoint and not the weight init
     if checkpoint_path is None and cfg["MODEL"]["WEIGHTS_INIT"]["PARAMS_FILE"]:
-        assert g_pathmgr.exists(
-            cfg["MODEL"]["WEIGHTS_INIT"]["PARAMS_FILE"]
-        ), "Specified PARAMS_FILE does NOT exist"
+        params_file = cfg["MODEL"]["WEIGHTS_INIT"]["PARAMS_FILE"]
+        error_message = f"Specified PARAMS_FILE does NOT exist: {params_file}"
+        assert g_pathmgr.exists(params_file), error_message
 
     # copy the data to local if user wants. This can speed up dataloading.
     _copy_to_local(cfg)
 
     try:
-        if world_size > 1:
-            torch.multiprocessing.spawn(
-                _distributed_worker,
-                nprocs=cfg.DISTRIBUTED.NUM_PROC_PER_NODE,
-                args=(
-                    cfg,
-                    node_id,
-                    dist_run_id,
-                    engine_name,
-                    checkpoint_path,
-                    checkpoint_folder,
-                    hook_generator,
-                ),
-                daemon=False,
-            )
-        else:
-            _distributed_worker(
-                local_rank=0,
-                cfg=cfg,
-                node_id=node_id,
-                dist_run_id=dist_run_id,
-                engine_name=engine_name,
-                checkpoint_path=checkpoint_path,
-                checkpoint_folder=checkpoint_folder,
-                hook_generator=hook_generator,
-            )
-
+        torch.multiprocessing.spawn(
+            _distributed_worker,
+            nprocs=cfg.DISTRIBUTED.NUM_PROC_PER_NODE,
+            args=(
+                cfg,
+                node_id,
+                dist_run_id,
+                engine_name,
+                checkpoint_path,
+                checkpoint_folder,
+                hook_generator,
+            ),
+            daemon=False,
+        )
     except (KeyboardInterrupt, RuntimeError) as e:
         logging.error("Wrapping up, caught exception: ", e)
         if isinstance(e, RuntimeError):
@@ -229,20 +215,16 @@ class _ResumableSlurmJob:
         return submitit.helpers.DelayedSubmission(trainer)
 
 
-def launch_distributed_on_slurm(cfg: AttrDict, engine_name: str):
+def create_submitit_executor(cfg: AttrDict):
     """
-    Launch a distributed training on SLURM, allocating the nodes and GPUs as described in
-    the configuration, and calls the function "launch_on_local_node" appropriately on each
-    of the nodes.
+    Utility function to create a SLURM submitit executor, which
+    is able to schedule arbitrary functions on a SLURM cluster
 
-    Args:
-        cfg (AttrDict): the configuration of the experiment
-        engine_name (str): the name of the engine to run (train or extract_features)
+    The configuration of the executor is derived from the SLURM part
+    of the VISSL configuration provided as parameter
     """
-
     import submitit
 
-    # setup the log folder
     log_folder = cfg.SLURM.LOG_FOLDER
     makedir(log_folder)
     assert g_pathmgr.exists(
@@ -265,8 +247,21 @@ def launch_distributed_on_slurm(cfg: AttrDict, engine_name: str):
         mem_gb=cfg.SLURM.MEM_GB,
         slurm_additional_parameters=cfg.SLURM.ADDITIONAL_PARAMETERS,
     )
+    return executor
+
+
+def launch_distributed_on_slurm(cfg: AttrDict, engine_name: str):
+    """
+    Launch a distributed training on SLURM, allocating the nodes and GPUs as described in
+    the configuration, and calls the function "launch_on_local_node" appropriately on each
+    of the nodes.
+
+    Args:
+        cfg (AttrDict): the configuration of the experiment
+        engine_name (str): the name of the engine to run (train or extract_features)
+    """
+    executor = create_submitit_executor(cfg)
     trainer = _ResumableSlurmJob(engine_name=engine_name, config=cfg)
     job = executor.submit(trainer)
     print(f"SUBMITTED: {job.job_id}")
-
     return job

@@ -19,14 +19,14 @@ from vissl.utils.misc import get_json_data_catalog_file
 from vissl.utils.slurm import get_slurm_dir
 
 
-class VisslDatasetCatalog(object):
+class VisslDatasetCatalog:
     """
     A catalog that stores information about the datasets and how to obtain them.
     It contains a mapping from strings (which are names that identify a dataset,
     e.g. "imagenet1k") to a `dict` which contains:
         1) mapping of various data splits (train, test, val) to the data source
            (path on the disk whether a folder path or a filelist)
-        2) source of the data (disk_filelist | disk_folder)
+        2) source of the data (disk_filelist | disk_folder | disk_roi_annotations)
     The purpose of having this catalog is to make it easy to choose different datasets,
     by just using the strings in the config.
     """
