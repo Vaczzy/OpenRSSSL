@@ -14,7 +14,8 @@ from classy_vision.generic.profiler import (
     count_params,
 )
 from classy_vision.hooks.classy_hook import ClassyHook
-from fvcore.common.file_io import PathManager
+# from fvcore.common.file_io import PathManager
+from iopath.common.file_io import g_pathmgr
 from vissl.data import AirstoreDataset, GenericSSLDataset
 from vissl.models.model_helpers import model_output_has_nan
 from vissl.utils.env import get_machine_local_and_dist_rank
@@ -166,9 +167,9 @@ class CheckNanModelOutputHook(ClassyHook):
             input_sample_file = (
                 f"{task.checkpoint_folder}/rank{dist_rank}_input_sample.pth"
             )
-            with PathManager.open(model_output_file, "wb") as fwrite:
+            with g_pathmgr.open(model_output_file, "wb") as fwrite:
                 torch.save(model_output, fwrite)
-            with PathManager.open(input_sample_file, "wb") as fwrite:
+            with g_pathmgr.open(input_sample_file, "wb") as fwrite:
                 torch.save(task.last_batch.sample, fwrite)
             logging.info(f"Saved model output: {model_output_file}")
             logging.info(f"Saved model input: {input_sample_file}")
