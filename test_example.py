@@ -1,0 +1,2 @@
+class TestExample:
+    print('check')
