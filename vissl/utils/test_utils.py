@@ -102,6 +102,7 @@ def parameterized_random(configs, ratio: int = 0.5, keep=lambda _config: False):
 
 @dataclass
 class TestTimer:
+    __test__ = False # for pytest
     elapsed_time_ms: int
 
 
