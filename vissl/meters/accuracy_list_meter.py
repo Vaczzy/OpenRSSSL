@@ -7,9 +7,11 @@ import pprint
 from typing import List, Union
 
 import torch
+import torch.nn.functional as F
 from classy_vision.generic.util import is_pos_int
 from classy_vision.meters import AccuracyMeter, ClassyMeter, register_meter
 from vissl.config import AttrDict
+from vissl.losses.cross_entropy_multiple_output_single_target import EnsembleOutput
 
 
 @register_meter("accuracy_list_meter")
@@ -17,8 +19,16 @@ class AccuracyListMeter(ClassyMeter):
     """
     Meter to calculate top-k accuracy for single label image classification task.
 
-    Supports Single target and multiple output. A list of accuracy meters is
+    Supports multi-target and multiple output. A list of accuracy meters is
     constructed and each output has a meter associated.
+
+    Example:
+        target = [0 0 0 1 1]  # Correct classes are 0, 3
+
+        pred = [0.06, 0.41, 0.04, 0.39, 0.1]  # Top-1 prediction is 1, top-3 is 1, 3, 0
+
+        Accuracy@1: 0 correct = 0.0
+        Accuracy@3: 1 correct = 1.0
 
     Args:
         num_meters: number of meters and hence we have same number of outputs
@@ -153,9 +163,42 @@ class AccuracyListMeter(ClassyMeter):
         if isinstance(model_output, torch.Tensor):
             model_output = [model_output]
         assert isinstance(model_output, list)
-        assert len(model_output) == self._num_meters
-        for (meter, output) in zip(self._meters, model_output):
-            meter.update(output, target)
+        assert len(model_output) == self._num_meters, f"{len(model_output)}"
+        for meter, output in zip(self._meters, model_output):
+            if isinstance(output, EnsembleOutput):
+                # Shape ensemble_size, batch_size, pred_size -> batch_size, ensemble_size, pred_size
+                output = F.softmax(output.outputs.permute((1, 0, 2)), dim=-1)
+                output = torch.mean(output, dim=1)
+                meter.update(output, target)
+            else:
+                meter.update(output, target)
+
+    def get_predictions(self, model_output: Union[torch.Tensor, List[torch.Tensor]]):
+        """
+        Return the model topk predictions given model output list and targets.
+        Predictions are the class numbers.
+
+        Args:
+            model_output: list of tensors of shape (B, C) where each value is
+                          either logit or class probability.
+
+        NOTE: For binary classification, C=2.
+        """
+        if isinstance(model_output, torch.Tensor):
+            model_output = [model_output]
+        assert isinstance(model_output, list)
+        assert (
+            len(model_output) == self._num_meters
+        ), "Model output and number of meters don't match"
+        predictions, out_scores = [], []
+        for output in model_output:
+            scores = output.float().softmax(dim=1)
+            _, pred = output.float().topk(
+                max(self._topk_values), dim=1, largest=True, sorted=True
+            )
+            predictions.append(pred)
+            out_scores.append(scores)
+        return predictions, out_scores
 
     def reset(self):
         """

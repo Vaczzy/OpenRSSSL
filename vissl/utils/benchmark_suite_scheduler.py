@@ -14,10 +14,9 @@ from typing import List
 
 import submitit
 from iopath.common.file_io import g_pathmgr
-from hydra.experimental import compose, initialize_config_module
 from vissl.config.attr_dict import AttrDict
 from vissl.utils.distributed_launcher import launch_distributed_on_slurm
-from vissl.utils.hydra_config import convert_to_attrdict
+from vissl.utils.hydra_config import compose_hydra_configuration, convert_to_attrdict
 from vissl.utils.io import load_file, makedir
 from vissl.utils.misc import flatten_dict, retry
 
@@ -341,9 +340,9 @@ class BenchmarkSuiteScheduler:
             benchmark["num_retries"] += 1
             benchmark["slurm_log_dir"] = config.SLURM.LOG_FOLDER
             benchmark["slurm_checkpoint_dir"] = config.CHECKPOINT.DIR
-            benchmark[
-                "weights_init_params_file"
-            ] = config.MODEL.WEIGHTS_INIT.PARAMS_FILE
+            benchmark["weights_init_params_file"] = (
+                config.MODEL.WEIGHTS_INIT.PARAMS_FILE
+            )
             benchmark["slurm_state"] = job.state
 
             current_time = datetime.now().strftime("%H:%M:%S %z")
@@ -608,11 +607,9 @@ class BenchmarkSuiteScheduler:
             "checkpoints",
         )
 
-    def _generate_config(self, config):
+    def _generate_config(self, overrides: List[str]):
         """
         Generate AttrDict config from a config YAML file and overrides.
         """
-        with initialize_config_module(config_module="vissl.config"):
-            config = compose("defaults", overrides=config)
-
-        return convert_to_attrdict(config)
+        cfg = compose_hydra_configuration(overrides)
+        return convert_to_attrdict(cfg)

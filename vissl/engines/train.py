@@ -109,7 +109,7 @@ def train_main(
     # `torch.cuda.current_device()` calls to return correct device.
     if cfg.MACHINE.DEVICE == "gpu" and torch.cuda.is_available():
         local_rank, _ = get_machine_local_and_dist_rank()
-        torch.cuda.set_device(local_rank) # PS：这里设置使用的gpu
+        torch.cuda.set_device(local_rank)
 
     # print the training settings and system settings
     if local_rank == 0:
@@ -127,7 +127,6 @@ def train_main(
     trainer = SelfSupervisionTrainer(
         cfg, dist_run_id, checkpoint_path, checkpoint_folder, hooks
     )
-    
     trainer.train()
     logging.info("All Done!")
     # close the logging streams including the filehandlers

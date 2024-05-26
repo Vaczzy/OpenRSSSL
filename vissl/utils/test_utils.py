@@ -4,12 +4,15 @@
 # LICENSE file in the root directory of this source tree.
 
 import functools
+import logging
 import os
+import random
 import re
 import tempfile
+from concurrent.futures.thread import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable, List, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -17,6 +20,8 @@ import torch.multiprocessing as mp
 from vissl.config.attr_dict import AttrDict
 from vissl.hooks import default_hook_generator
 from vissl.utils.distributed_launcher import launch_distributed
+from vissl.utils.hydra_config import initialize_hydra_config_module
+from vissl.utils.misc import is_augly_available
 
 
 @contextmanager
@@ -29,8 +34,10 @@ def in_temporary_directory(enabled: bool = True):
         old_cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as temp_dir:
             os.chdir(temp_dir)
-            yield temp_dir
-            os.chdir(old_cwd)
+            try:
+                yield temp_dir
+            finally:
+                os.chdir(old_cwd)
     else:
         yield os.getcwd()
 
@@ -52,8 +59,50 @@ def with_temp_files(count: int):
             os.close(t[0])
 
 
+def parameterized_parallel(configs, max_workers: int = 20):
+    """
+    Helper functions for parameterized tests that need
+    to run in parallel for faster processing
+    """
+
+    def decorator(test_fn):
+        @functools.wraps(test_fn)
+        def wrapper(self):
+            with initialize_hydra_config_module():
+                with ThreadPoolExecutor(max_workers) as executor:
+                    successes = executor.map(lambda c: test_fn(self, c), configs)
+                    for config, success in zip(configs, successes):
+                        self.assertTrue(success, f"Failed test for: {config}")
+
+        return wrapper
+
+    return decorator
+
+
+def parameterized_random(configs, ratio: int = 0.5, keep=lambda _config: False):
+    """
+    Helper function for parameterized tests that have very
+    low probability of failing (and can be skipped randomly)
+    """
+
+    def decorator(test_fn):
+        @functools.wraps(test_fn)
+        def wrapper(self):
+            with initialize_hydra_config_module():
+                for config in configs:
+                    if keep(config) or random.random() < ratio:
+                        test_fn(self, config)
+                    else:
+                        logging.warning(f"Randomly skipped test: {config}")
+
+        return wrapper
+
+    return decorator
+
+
 @dataclass
 class TestTimer:
+    __test__ = False # for pytest
     elapsed_time_ms: int
 
 
@@ -83,6 +132,23 @@ def gpu_test(gpu_count: int = 1):
         @functools.wraps(test_function)
         def wrapped_test(*args, **kwargs):
             if torch.cuda.device_count() >= gpu_count:
+                return test_function(*args, **kwargs)
+
+        return wrapped_test
+
+    return gpu_test_decorator
+
+
+def augly_test():
+    """
+    Annotation for Augly tests, skipping the test if the
+    required amount of Augly is not available
+    """
+
+    def gpu_test_decorator(test_function: Callable):
+        @functools.wraps(test_function)
+        def wrapped_test(*args, **kwargs):
+            if is_augly_available():
                 return test_function(*args, **kwargs)
 
         return wrapped_test
@@ -147,6 +213,20 @@ def parse_losses_from_log_file(file_name: str):
     return iterations, losses
 
 
+def parse_peak_memory_from_log_file(file_name: str) -> List[float]:
+    peak_memory = []
+    regex = re.compile(r"peak_mem\(M\): (.*?);")
+    with open(file_name, "r") as file:
+        for line in file:
+            if not line.startswith("INFO"):
+                continue
+            match = regex.search(line)
+            if match is not None:
+                value = float(match.group(1))
+                peak_memory.append(value)
+    return peak_memory
+
+
 def parse_accuracies_from_log_file(file_name: str) -> List[str]:
     """
     Read a log file produced by VISSL and extract the list of accuracies
@@ -185,18 +265,49 @@ class IntegrationTestLogs:
         log_path = os.path.join(self.run_dir, "log.txt")
         return parse_losses_from_log_file(log_path)[1]
 
+    def get_peak_memory(self) -> List[float]:
+        log_path = os.path.join(self.run_dir, "log.txt")
+        return parse_peak_memory_from_log_file(log_path)
+
     def get_losses_with_iterations(self) -> Tuple[List[int], List[float]]:
         log_path = os.path.join(self.run_dir, "log.txt")
         return parse_losses_from_log_file(log_path)
 
-    def get_accuracies(self, from_metrics_file: bool = False) -> List[str]:
+    def get_stdout(self) -> List[dict]:
+        import json
+
+        stdout_path = os.path.join(self.run_dir, "stdout.json")
+        with open(stdout_path, "r") as file:
+            lines = []
+            for line in file:
+                line = line.strip()
+                lines.append(json.loads(line))
+            return lines
+
+    def get_accuracies(self, from_metrics_file: bool = False) -> List[Union[dict, str]]:
         if from_metrics_file:
+            import json
+
             metrics_path = os.path.join(self.run_dir, "metrics.json")
-            with open(metrics_path, "r") as f:
-                return [l.strip() for l in f]
+            with open(metrics_path, "r") as file:
+                accuracies = []
+                for line in file:
+                    line = line.strip()
+                    accuracies.append(json.loads(line))
+                return accuracies
         else:
             log_path = os.path.join(self.run_dir, "log.txt")
             return parse_accuracies_from_log_file(log_path)
+
+    def get_final_accuracy(self, layer_name: str, metric: str = "top_1") -> float:
+        accuracies = self.get_accuracies(from_metrics_file=True)
+        try:
+            final_accuracy = accuracies[-1]["test_accuracy_list_meter"][metric][
+                layer_name
+            ]
+            return final_accuracy
+        except KeyError:
+            raise ValueError(f"Missing key {layer_name} in: {accuracies[-1]}")
 
 
 def run_integration_test(

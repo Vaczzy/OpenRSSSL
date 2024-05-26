@@ -14,13 +14,17 @@ from classy_vision.generic.profiler import (
     count_params,
 )
 from classy_vision.hooks.classy_hook import ClassyHook
+# from fvcore.common.file_io import PathManager
+from iopath.common.file_io import g_pathmgr
 from vissl.data import AirstoreDataset, GenericSSLDataset
+from vissl.models.model_helpers import model_output_has_nan
+from vissl.utils.env import get_machine_local_and_dist_rank
 
 
 class SSLModelComplexityHook(ClassyHook):
     """
     Logs the number of paramaters, forward pass FLOPs and activations of the model.
-    Adapted from: https://github.com/facebookresearch/ClassyVision/blob/master/classy_vision/hooks/model_complexity_hook.py#L20    # NOQA
+    Adapted from: https://github.com/facebookresearch/ClassyVision/blob/main/classy_vision/hooks/model_complexity_hook.py#L20    # NOQA
     """
 
     on_phase_start = ClassyHook._noop
@@ -113,109 +117,62 @@ class SetDataSamplerEpochHook(ClassyHook):
         logging.info(f"Starting phase {task.phase_idx} [{phase_type}]")
 
 
-class UpdateBatchesSeenHook(ClassyHook):
+class CheckNanModelOutputHook(ClassyHook):
     """
-    Book-keeping only hook. Tracks how many forward passes have been done.
-    aka how many batches have been seen by the trainer irrespective of
-    the train or test phase. updates task.batches
+    After every model forward, verify the loss is not infinite.
+    Called for both training/test phase.
     """
 
     on_start = ClassyHook._noop
     on_phase_start = ClassyHook._noop
-    on_loss_and_meter = ClassyHook._noop
     on_backward = ClassyHook._noop
     on_phase_end = ClassyHook._noop
     on_end = ClassyHook._noop
-    on_update = ClassyHook._noop
     on_step = ClassyHook._noop
+    on_update = ClassyHook._noop
+    on_loss_and_meter = ClassyHook._noop
+
+    def __init__(self, world_size: int):
+        super().__init__()
+        self.world_size = world_size
 
     def on_forward(self, task: "tasks.ClassyTask") -> None:
         """
-        Called each time forward pass is triggered. We update the number of batches
-        we have seen. This is useful for debugging.
+        Called each time a model forward is done and make sure that
+        the model forward output is not NaN. If we encounter NaN as the model
+        output, we checkpoint the model to enable debugging and also checkpoint
+        the model input sample, model output.
         """
-        task.batches += 1
+        # check the model output is not NaN.
+        model_output = task.last_batch.model_output
+        has_nan = model_output_has_nan(model_output)
 
+        if has_nan:
+            _, dist_rank = get_machine_local_and_dist_rank()
+            logging.info(f"Infinite Model output or NaN at iteration={task.iteration}.")
 
-class UpdateTrainIterationNumHook(ClassyHook):
-    """
-    Book-keeping hook: updates the training iteration number (only updated
-    if it's a training phase). task.iteration is updated.
-    """
+            # TODO - this code was broken during a refactoring: improve it
+            from vissl.hooks.log_hooks import LogLossMetricsCheckpointHook
 
-    on_start = ClassyHook._noop
-    on_phase_start = ClassyHook._noop
-    on_loss_and_meter = ClassyHook._noop
-    on_backward = ClassyHook._noop
-    on_phase_end = ClassyHook._noop
-    on_end = ClassyHook._noop
-    on_update = ClassyHook._noop
-    on_step = ClassyHook._noop
-
-    def on_forward(self, task: "tasks.ClassyTask") -> None:
-        """
-        Called each time forward pass is triggered.
-        We update the current iteration.
-        """
-        if task.train:
-            task.iteration += 1
-
-
-class UpdateTrainBatchTimeHook(ClassyHook):
-    """
-    After after parameters update step (training phase), we update the batch
-    time aka the training time for the current iteration.
-    """
-
-    on_start = ClassyHook._noop
-    on_phase_start = ClassyHook._noop
-    on_forward = ClassyHook._noop
-    on_loss_and_meter = ClassyHook._noop
-    on_backward = ClassyHook._noop
-    on_phase_end = ClassyHook._noop
-    on_end = ClassyHook._noop
-    on_step = ClassyHook._noop
-
-    def on_update(self, task: "tasks.ClassyTask") -> None:
-        """
-        Called each time forward pass is triggered. We update the number of batches
-        we have seen. This is useful for debugging.
-        """
-        if not task.train:
-            return
-
-        task.batch_time.append(time.time() - task.start_time)
-        task.start_time = time.time()
-
-
-class UpdateTestBatchTimeHook(ClassyHook):
-    """
-    Include the batch time for test phase as well and called every
-    time loss has been computed. Only updates task.batch_time if
-    it's a test phase and train phase is already updated by
-    UpdateTrainBatchTimeHook hook.
-    """
-
-    on_start = ClassyHook._noop
-    on_phase_start = ClassyHook._noop
-    on_forward = ClassyHook._noop
-    on_backward = ClassyHook._noop
-    on_phase_end = ClassyHook._noop
-    on_end = ClassyHook._noop
-    on_step = ClassyHook._noop
-    on_update = ClassyHook._noop
-
-    def on_loss_and_meter(self, task: "tasks.ClassyTask") -> None:
-        """
-        Called each time a loss has been computed. Append the batch time for
-        test phase.
-        """
-        # we call this here so that if we are running the test phase, we don't
-        # have any update computed. But the loss only. So we call the update time
-        # here to capture the loss for test as well.
-        if not task.train:
-            task.batch_time.append(time.time() - task.start_time)
-            task.start_time = time.time()
+            LogLossMetricsCheckpointHook.checkpoint_model(
+                task,
+                world_size=self.world_size,
+                mode_frequency=1,
+                mode_num=task.iteration,
+                mode="iteration",
+            )
+            model_output_file = (
+                f"{task.checkpoint_folder}/rank{dist_rank}_model_output.pth"
+            )
+            input_sample_file = (
+                f"{task.checkpoint_folder}/rank{dist_rank}_input_sample.pth"
+            )
+            with g_pathmgr.open(model_output_file, "wb") as fwrite:
+                torch.save(model_output, fwrite)
+            with g_pathmgr.open(input_sample_file, "wb") as fwrite:
+                torch.save(task.last_batch.sample, fwrite)
+            logging.info(f"Saved model output: {model_output_file}")
+            logging.info(f"Saved model input: {input_sample_file}")
 
 
 class CheckNanLossHook(ClassyHook):
@@ -286,21 +243,28 @@ class FreezeParametersHook(ClassyHook):
                 )
             return
 
-        world_size = (
-            task.config.DISTRIBUTED.NUM_NODES
-            * task.config.DISTRIBUTED.NUM_PROC_PER_NODE
-        )
-        match_param_prefix = "module." if world_size == 1 else ""
         num_matched_named_params = 0
         for name, p in task.model.named_parameters():
-            match_param_name = f"{match_param_prefix}{name}"
+            match_param_name = self._clean_param_path(name)
             if (
                 match_param_name in map_params_to_iters
             ) and task.iteration < map_params_to_iters[match_param_name]:
                 num_matched_named_params += 1
                 p.grad = None
+
         # TODO (Min): we need to check the exact target number.
         assert num_matched_named_params > 0, (
             f"Didn't find expected number of layers: "
             f"{num_matched_named_params} vs.  {len(map_params_to_iters)}"
         )
+
+    @staticmethod
+    def _clean_param_path(param_name: str) -> str:
+        # Remove FSDP path artifacts
+        paths_to_remove = ["_fsdp_wrapped_module.", "_fpw_module."]
+        for path_to_remove in paths_to_remove:
+            param_name = param_name.replace(path_to_remove, "")
+        # Add the missing "module." prefix if missing (DDP prefix)
+        if not param_name.startswith("module."):
+            param_name = f"module.{param_name}"
+        return param_name

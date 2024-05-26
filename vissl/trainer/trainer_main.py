@@ -2,11 +2,14 @@
 
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+
 import gc
+import itertools
 import logging
 import os
 import socket
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -18,9 +21,8 @@ from classy_vision.generic.distributed_util import (
     set_cpu_device,
     set_cuda_device_index,
 )
-from classy_vision.generic.util import copy_model_to_gpu
 from classy_vision.hooks.classy_hook import ClassyHook
-from classy_vision.tasks import TASK_REGISTRY, ClassyTask
+from classy_vision.tasks import ClassyTask, TASK_REGISTRY
 from vissl.config import AttrDict
 from vissl.hooks import SSLClassyHookFunctions
 from vissl.models.model_helpers import get_trunk_output_feature_names
@@ -28,6 +30,7 @@ from vissl.trainer.train_steps import get_train_step
 from vissl.utils.distributed_utils import all_gather_heterogeneous, all_gather_sizes
 from vissl.utils.env import get_machine_local_and_dist_rank
 from vissl.utils.io import save_file
+
 
 def build_task(config):
     """Builds a ClassyTask from a config.
@@ -41,7 +44,7 @@ def build_task(config):
     return task
 
 
-class SelfSupervisionTrainer(object):
+class SelfSupervisionTrainer:
     """
     The main entry point for any training or feature extraction workflows in VISSL.
 
@@ -139,7 +142,7 @@ class SelfSupervisionTrainer(object):
                 dist.all_reduce(torch.zeros(1).cuda())
         else:
             set_cpu_device()
-    
+
     def train(self):
         """
         The train workflow. We get the training loop to use (vissl default is
@@ -156,7 +159,6 @@ class SelfSupervisionTrainer(object):
         4. At the end of epoch, sync meters and execute hooks at the end of phase. Involves
            things like checkpointing model, logging timers, logging to tensorboard etc
         """
-        
         train_step_fn = get_train_step(self.cfg["TRAINER"]["TRAIN_STEP_NAME"])
         self.task.prepare(pin_memory=self.cfg.DATA.PIN_MEMORY)
         self.task.init_distributed_data_parallel_model()
@@ -175,7 +177,6 @@ class SelfSupervisionTrainer(object):
 
         while phase_idx + 1 < len(task.phases):
             self._advance_phase(task)  # advances task.phase_idx
-
             phase_idx += 1
             iteration_num += 1
             task.local_iteration_num = iteration_num  # iteration_num=0 at this step
@@ -190,13 +191,20 @@ class SelfSupervisionTrainer(object):
                         )
                         torch.cuda.empty_cache()
                         logging.info("CUDA cache cleared")
-                    
-                    task= train_step_fn(task)
+                    task = train_step_fn(task)
                     iteration_num += 1
                     task.local_iteration_num = iteration_num
-
+                    # Book-keeping: update the training iteration number (only updated
+                    # if it's a training phase).
+                    task.iteration += 1 if task.train else 0
+                    # Book-keeping. Track how many forward passes have been done.
+                    # aka how many batches have been seen by the trainer irrespective of
+                    # the train or test phase.
+                    task.batches += 1
+                    # update the batch time aka the training time for the current iteration.
+                    task.batch_time.append(time.time() - task.start_time)
+                    task.start_time = time.time()
                     task.run_hooks(SSLClassyHookFunctions.on_step.name)
-
                 except StopIteration:
                     break
                 except Exception as e:
@@ -207,10 +215,7 @@ class SelfSupervisionTrainer(object):
             logging.info("Meters synced")
             barrier()
             task.run_hooks(SSLClassyHookFunctions.on_phase_end.name)
-            
-            
 
-        
         task.run_hooks(SSLClassyHookFunctions.on_end.name)
         if hasattr(task, "data_iterator"):
             del task.data_iterator
@@ -306,7 +311,6 @@ class SelfSupervisionTrainer(object):
         # starting from the resumed training, we want to compute_start_iter
         # again (if applicable) since we recreate the data iterator and delete
         # the old ones.
-        # 
         compute_start_iter = False
         if task.checkpoint is not None and task.checkpoint["train_phase_idx"] == (
             task.train_phase_idx - 1
@@ -329,24 +333,35 @@ class SelfSupervisionTrainer(object):
         local_rank, _ = get_machine_local_and_dist_rank()
         logging.info(f"Phase advanced. Rank: {local_rank}")
 
-    def extract(self, output_folder: str) -> None:
+    # ----------------------------------------------------------------------------------- #
+    # Parent function that calls features OR label predictions functions
+    # and utility functions.
+    # ----------------------------------------------------------------------------------- #
+    def extract(
+        self,
+        output_folder: str,
+        extract_features: bool = True,
+        extract_predictions: bool = False,
+    ) -> None:
         """
-        Extract workflow supports multi-gpu feature extraction. Since we are only extracting
-        features, only the model is built (and initialized from some model weights file
-        if specified by user). The model is set to the eval mode fully.
+        Extract workflow supports multi-gpu feature extraction and also extracting
+        predicted labels. Since we are only extracting features or label predictions,
+        only the model is built (and initialized from some model weights file
+        if specified by user). Optionally the meters are built if the labels
+        are being extracted. The model is set to the eval mode fully.
 
-        The features are extracted for whatever data splits (train, val, test) etc that user
-        wants.
+        The features / labels are extracted for whatever data splits (train, val, test)
+        the user wants.
         """
-        # support feature extraction on gpu only.
+        # support feature/label predictions extraction on gpu only.
         assert self.task.device.type == "cuda", "Set MACHINE.DEVICE = gpu"
         self.task.prepare_extraction(pin_memory=self.cfg.DATA.PIN_MEMORY)
 
         # Create distributed model
-        self._add_dummy_layer()
+        self.task.add_dummy_layer()
         self.task.init_distributed_data_parallel_model()
         if is_primary():
-            logging.info("Model is:\n {}".format(self.task.model))
+            logging.info(f"Model is:\n {self.task.model}")
 
         # Get the names of the features that we are extracting. If user doesn't
         # specify the features to evaluate, we get the full model output and freeze
@@ -355,15 +370,234 @@ class SelfSupervisionTrainer(object):
         if len(feat_names) == 0:
             feat_names = ["heads"]
 
+        self.task.train = False
+        self.task.run_hooks(SSLClassyHookFunctions.on_start.name)
         for split in self.task.available_splits:
             logging.info(f"============== Split: {split} =======================")
-            logging.info(f"Extracting features for partition: {split.lower()}")
             self.task.data_iterator = iter(self.task.dataloaders[split.lower()])
-            self._extract_split_features(feat_names, self.task, split, output_folder)
-            logging.info(f"Done getting features for partition: {split.lower()}")
+            if extract_features:
+                logging.info(f"Extracting features for partition: {split.lower()}")
+                self._extract_split_features(
+                    feat_names, self.task, split, output_folder
+                )
+                logging.info(f"Done getting features for partition: {split.lower()}")
+            if extract_predictions:
+                logging.info(f"Extracting predictions for partition: {split.lower()}")
+                self._extract_split_label_predictions(
+                    feat_names, self.task, split, output_folder
+                )
+                logging.info(f"Done getting predictions for partition: {split.lower()}")
+        self.task.run_hooks(SSLClassyHookFunctions.on_end.name)
 
         self._cleanup_task()
 
+    def _to_unique_feature_names(self, feat_names: List[str]) -> List[str]:
+        """
+        We may have multiple head with different average pooling for
+        the same features. In case of export, we want to make sure to
+        export the outputs of these heads with different names.
+
+        This function will rename the features in the following way:
+        ["res4", "res4", "res5"] -> ["res4", "res4_1", "res5"]
+
+        No effect if there are no duplicate feature names.
+        """
+        counter = {}
+        new_feat_names = []
+        for feat_name in feat_names:
+            index = counter.get(feat_name, 0)
+            if index > 0:
+                new_feat_names.append(f"{feat_name}_{index}")
+            else:
+                new_feat_names.append(feat_name)
+            counter[feat_name] = index + 1
+        return new_feat_names
+
+    # ----------------------------------------------------------------------------------- #
+    # Extracting label predictions and utility functions.
+    # ----------------------------------------------------------------------------------- #
+    def _extract_split_label_predictions(
+        self,
+        feat_names: List[str],
+        task: ClassyTask,
+        split_name: str,
+        output_folder: str,
+    ):
+        task.model.eval()
+        logging.info("Model set to eval mode during feature extraction...")
+        dist_rank = torch.distributed.get_rank()
+
+        feat_names = self._to_unique_feature_names(feat_names)
+        out_predictions, out_targets, out_scores = {}, {}, {}
+        for feat_name in feat_names:
+            out_predictions[feat_name] = {}
+            out_scores[feat_name] = {}
+            out_targets[feat_name] = {}
+
+        assert len(task.meters) > 0, "Please specify one meter to extract predictions"
+        assert len(task.meters) == 1, "Please use only one meter to extract predictions"
+        for meter in task.meters:
+            assert hasattr(
+                meter, "get_predictions"
+            ), f"Meter {meter.name} doesn't implement get_predictions function"
+
+        dataset = task.datasets[split_name.lower()]
+        all_image_paths = dataset.get_image_paths()
+        assert (
+            len(all_image_paths) == 1
+        ), "Multi-dataset not supported yet for label predictions."
+        all_image_paths = all_image_paths[0]
+
+        for count in itertools.count(start=0, step=1):
+            try:
+                if count % 100 == 0:
+                    logging.info(f"Label prediction extraction iteration: {count}")
+                sample = next(task.data_iterator)
+                assert isinstance(sample, dict)
+                assert "data_idx" in sample, "Indices not passed"
+                input_sample = {
+                    "input": torch.cat(sample["data"]).cuda(non_blocking=True),
+                    "target": torch.cat(sample["label"]).cpu().numpy(),
+                    "inds": torch.cat(sample["data_idx"]).cpu().numpy(),
+                }
+                with torch.no_grad():
+                    # Send the input sample to the model, tracking also the
+                    # last batch for the hooks to refer to
+                    task.last_batch = SimpleNamespace()
+                    model_output = task.model(input_sample["input"])
+                    task.last_batch.sample = input_sample
+                    task.last_batch.model_output = model_output
+
+                    # Run hooks on forward pass
+                    task.run_hooks(SSLClassyHookFunctions.on_forward.name)
+
+                    # get the model predictions using the meter
+                    if isinstance(model_output, list):
+                        model_output_cpu = [x.cpu() for x in model_output]
+                    else:
+                        model_output_cpu = model_output.cpu()
+                    for meter in task.meters:
+                        meter.update(
+                            model_output_cpu, sample["label"][0].detach().cpu()
+                        )
+                    predictions, pred_scores = task.meters[0].get_predictions(
+                        model_output_cpu
+                    )
+                    num_images = input_sample["inds"].shape[0]
+                    for num, layer_name in enumerate(feat_names):
+                        pred = predictions[num]
+                        score = pred_scores[num]
+                        targets = input_sample["target"]
+                        for idx in range(num_images):
+                            index = input_sample["inds"][idx]
+                            if not (index in out_predictions[layer_name]):
+                                out_targets[layer_name][index] = targets[idx].reshape(
+                                    -1
+                                )
+                                out_predictions[layer_name][index] = pred[idx]
+                                out_scores[layer_name][index] = score[idx]
+            except StopIteration:
+                break
+
+        # print the meters results. This can offer a validation
+        # of the extracted predictions.
+        self._sync_and_print_meters(task)
+        # save the predictions, targets and image indices now
+        self._save_extracted_label_predictions(
+            all_image_paths=all_image_paths,
+            predictions=out_predictions,
+            confidence_scores=out_scores,
+            targets=out_targets,
+            dist_rank=dist_rank,
+            split=split_name,
+            output_folder=output_folder,
+        )
+
+    @staticmethod
+    def _save_extracted_label_predictions(
+        all_image_paths: List[str],
+        predictions: Dict[str, Dict[int, Any]],
+        confidence_scores: Dict[str, Dict[str, Any]],
+        targets: Dict[str, Dict[int, Any]],
+        dist_rank: int,
+        split: str,
+        output_folder: str,
+    ):
+        output = {}
+        for layer_name in predictions.keys():
+            predictions[layer_name] = dict(sorted(predictions[layer_name].items()))
+            targets[layer_name] = dict(sorted(targets[layer_name].items()))
+            confidence_scores[layer_name] = dict(
+                sorted(confidence_scores[layer_name].items())
+            )
+            preds = np.array(torch.stack(list(predictions[layer_name].values())))
+            scores = np.array(torch.stack(list(confidence_scores[layer_name].values())))
+            indices = np.array(list(predictions[layer_name].keys()))
+            image_paths = np.array([all_image_paths[i] for i in indices])
+            N = preds.shape[0]
+            output[layer_name] = {
+                "predictions": preds.reshape(N, -1),
+                "confidence_scores": scores.reshape(N, -1),
+                "targets": np.array(list(targets[layer_name].values())),
+                "inds": indices,
+                "image_paths": image_paths,
+            }
+
+        split = split.lower()
+        for layer_name, layer_prediction in output.items():
+            out_pred_file = (
+                f"{output_folder}/rank{dist_rank}_{split}_{layer_name}_predictions.npy"
+            )
+            out_scores_file = (
+                f"{output_folder}/rank{dist_rank}_{split}_{layer_name}_conf_scores.npy"
+            )
+            out_target_file = (
+                f"{output_folder}/rank{dist_rank}_{split}_{layer_name}_targets.npy"
+            )
+            out_inds_file = (
+                f"{output_folder}/rank{dist_rank}_{split}_{layer_name}_inds.npy"
+            )
+            out_images_file = (
+                f"{output_folder}/rank{dist_rank}_{split}_{layer_name}_images.npy"
+            )
+
+            logging.info(
+                f"For {layer_name}, "
+                f"saving predictions: {layer_prediction['predictions'].shape}, "
+                f"saving scores: {layer_prediction['confidence_scores'].shape}, "
+                f"targets: {layer_prediction['targets'].shape}, "
+                f"inds: {layer_prediction['inds'].shape}, "
+                f"images: {layer_prediction['image_paths'].shape}"
+            )
+            save_file(layer_prediction["predictions"], out_pred_file)
+            save_file(layer_prediction["confidence_scores"], out_scores_file)
+            save_file(layer_prediction["targets"], out_target_file)
+            save_file(layer_prediction["inds"], out_inds_file)
+            save_file(layer_prediction["image_paths"], out_images_file)
+
+    def _sync_and_print_meters(self, task):
+        for meter in task.meters:
+            meter.sync_state()
+            logging.info("Meters synced")
+        if is_primary():
+            rank, _ = get_machine_local_and_dist_rank()
+            for meter in task.meters:
+                if len(task.meters) > 0 and (
+                    (task.train and task.config["METERS"]["enable_training_meter"])
+                    or (not task.train)
+                ):
+                    meter_value = meter.value
+                    metric_key = f"{meter.name}"
+                    if metric_key not in task.metrics:
+                        task.metrics[metric_key] = []
+                    task.metrics[metric_key].append(meter_value)
+                    logging.info(
+                        f"Rank: {rank}, name: {metric_key}, value: {meter_value}"
+                    )
+
+    # ----------------------------------------------------------------------------------- #
+    # Extracting features and utility functions.
+    # ----------------------------------------------------------------------------------- #
     @staticmethod
     def _flatten_features_list(features: Dict[str, Any]):
         assert isinstance(features, list), "features must be of type list"
@@ -373,8 +607,8 @@ class SelfSupervisionTrainer(object):
             return flat_features_list
         return features
 
-    @staticmethod
     def _save_extracted_features(
+        self,
         features,
         targets,
         dist_rank: int,
@@ -386,9 +620,19 @@ class SelfSupervisionTrainer(object):
         for layer_name in features.keys():
             indices = sorted(features[layer_name].keys())
             if len(indices) > 0:
+                feats = [features[layer_name][i] for i in indices]
+                if self._is_list_of_tensors_same_shape(features[layer_name]):
+                    feats = np.array(feats)
+                else:
+                    # If each tensor is not the same shape (e.g. images are of variable size)
+                    # we need to create a np.array(dtype=object).
+                    feats = np.array(
+                        [features[layer_name][i].tolist() for i in indices]
+                    )
+
                 output[layer_name] = {
                     "inds": np.array(indices),
-                    "features": np.array([features[layer_name][i] for i in indices]),
+                    "features": feats,
                     "targets": np.array([targets[layer_name][i] for i in indices]),
                 }
 
@@ -404,6 +648,11 @@ class SelfSupervisionTrainer(object):
             out_inds_file = os.path.join(
                 output_folder,
                 f"rank{dist_rank}_chunk{chunk_index}_{split.lower()}_{layer_name}_inds.npy",
+            )
+            logging.info(
+                f"Saving features: {layer_features['features'].shape}, "
+                f"targets: {layer_features['targets'].shape}, "
+                f"inds: {layer_features['inds'].shape}"
             )
             save_file(layer_features["features"], out_feat_file)
             save_file(layer_features["targets"], out_target_file)
@@ -424,9 +673,10 @@ class SelfSupervisionTrainer(object):
         for feat_name in feat_names:
             out_features[feat_name], out_targets[feat_name] = {}, {}
 
-        chunk_index = 0
-        feature_buffer_size = 0
+        chunk_index, feature_buffer_size, count = 0, 0, 0
         while True:
+            if count % 100 == 0:
+                logging.info(f"Feature extraction iteration: {count}")
             try:
                 sample = next(task.data_iterator)
                 assert isinstance(sample, dict)
@@ -477,21 +727,12 @@ class SelfSupervisionTrainer(object):
                     output_folder=output_folder,
                 )
                 break
+            count += 1
 
-    def _add_dummy_layer(self):
-        """
-        In case of feature evaluation mode, if we are freezing both trunk and
-        head, DDP won't work as there are no parameters in the model. Adding
-        the dummy head will lead to features being not right. So we rather
-        add the dummy layer to the model and use DDP. We copy the model to
-        gpu (if using gpus) after the new dummy layer addition.
-        """
-        fully_frozen_model = self.task.base_model.is_fully_frozen_model()
-        if fully_frozen_model:
-            self.task.base_model.dummy_layer = torch.nn.Linear(4, 4)
-            if self.task.device.type == "cuda":
-                self.task.base_model = copy_model_to_gpu(self.task.base_model)
-
+    # ----------------------------------------------------------------------------------- #
+    # Extracting cluster assignments for SSL approaches
+    # that assign clusters such as SwAV and utility functions.
+    # ----------------------------------------------------------------------------------- #
     def _cleanup_task(self):
         if hasattr(self.task, "data_iterator"):
             del self.task.data_iterator
@@ -500,7 +741,7 @@ class SelfSupervisionTrainer(object):
             del self.task.dataloaders
             gc.collect()
 
-    def extract_clusters(self) -> Dict[str, Dict[int, int]]:
+    def extract_clusters(self, output_folder: str) -> Dict[str, Dict[int, int]]:
         """
         Workflow to extract multi-gpu cluster extraction for pre-trained models
         based on clusterization (SwAV, DeepCluster, etc).
@@ -514,11 +755,12 @@ class SelfSupervisionTrainer(object):
         self.task.prepare_extraction(pin_memory=self.cfg.DATA.PIN_MEMORY)
 
         # Assert that the model support extract of clusters
-        error_message = "Extracting clusters is only available for pre-training methods based on clusters"
-        assert self.task.base_model.is_clustering_model(), error_message
+        assert (
+            self.task.base_model.is_clustering_model()
+        ), "Extracting clusters is only available for cluster based pre-training methods"
 
         # Create distributed model
-        self._add_dummy_layer()
+        self.task.add_dummy_layer()
         self.task.init_distributed_data_parallel_model()
         if is_primary():
             logging.info("Model is:\n {}".format(self.task.model))
@@ -529,7 +771,7 @@ class SelfSupervisionTrainer(object):
             msg = f"Extracting cluster assignment for partition: {split}"
             logging.info(msg)
             cluster_assignment[split] = self._get_cluster_assignment_for_split(
-                self.task, split
+                self.task, split, output_folder=output_folder
             )
             logging.info("Done: " + msg)
         self._cleanup_task()
@@ -537,35 +779,93 @@ class SelfSupervisionTrainer(object):
         # Merge the cluster assignments and group by cluster
         return self._merge_cluster_assignments(cluster_assignment)
 
-    def _get_cluster_assignment_for_split(self, task: ClassyTask, split: str):
+    def _get_cluster_assignment_for_split(
+        self, task: ClassyTask, split: str, output_folder: str
+    ):
         task.model.eval()
         logging.info("Model set to eval mode during feature extraction...")
+        dist_rank = torch.distributed.get_rank()
 
         cluster_assignments = {}
+        soft_cluster_assignments = {}
+        image_indices = []
+        chunk_index, buffer_size = 0, 0
+
         task.data_iterator = iter(self.task.dataloaders[split.lower()])
         while True:
             try:
                 sample = next(task.data_iterator)
                 assert isinstance(sample, dict)
                 assert "data_idx" in sample, "Indices not passed"
-
                 input_sample = {
                     "images": torch.cat(sample["data"]).cuda(non_blocking=True),
                     "indices": torch.cat(sample["data_idx"]).cpu().numpy(),
                 }
-
                 with torch.no_grad():
-                    features = task.model(input_sample["images"])
-                    features = features[0]
-                    prototype_score = features[1]
+                    outputs = task.model(input_sample["images"])
+                    prototype_score = outputs[0][1]
                     prototype_index = prototype_score.argmax(dim=-1)
                     num_images = input_sample["indices"].shape[0]
+                    buffer_size += num_images
                     for idx in range(num_images):
                         image_index = input_sample["indices"][idx]
                         cluster_assignments[image_index] = prototype_index[idx].item()
+                        soft_cluster_assignments[image_index] = (
+                            prototype_score.cpu().numpy()
+                        )
+                        image_indices.append(image_index)
+
+                if buffer_size >= self.cfg.EXTRACT_FEATURES.CHUNK_THRESHOLD >= 0:
+                    self._save_extracted_prototypes(
+                        soft_assignments=soft_cluster_assignments,
+                        out_indices=image_indices,
+                        dist_rank=dist_rank,
+                        chunk_index=chunk_index,
+                        split=split,
+                        output_folder=output_folder,
+                    )
+                    soft_cluster_assignments.clear()
+                    image_indices.clear()
+                    chunk_index += 1
+                    buffer_size = 0
+
             except StopIteration:
+                if buffer_size:
+                    self._save_extracted_prototypes(
+                        soft_assignments=soft_cluster_assignments,
+                        out_indices=image_indices,
+                        dist_rank=dist_rank,
+                        chunk_index=chunk_index,
+                        split=split,
+                        output_folder=output_folder,
+                    )
                 break
         return cluster_assignments
+
+    @staticmethod
+    def _save_extracted_prototypes(
+        soft_assignments: Dict[int, np.ndarray],
+        out_indices: List[int],
+        dist_rank: int,
+        chunk_index: int,
+        split: str,
+        output_folder: str,
+    ):
+        out_indices = np.array(out_indices)
+        out_protos = np.concatenate([soft_assignments[i] for i in out_indices], axis=0)
+        out_proto_file = os.path.join(
+            output_folder,
+            f"rank{dist_rank}_chunk{chunk_index}_{split.lower()}_heads_protos.npy",
+        )
+        out_inds_file = os.path.join(
+            output_folder,
+            f"rank{dist_rank}_chunk{chunk_index}_{split.lower()}_heads_inds.npy",
+        )
+        logging.info(
+            f"Saving features: {out_protos.shape}, " f"inds: {out_indices.shape}"
+        )
+        save_file(out_protos, out_proto_file)
+        save_file(out_indices, out_inds_file)
 
     @staticmethod
     def _merge_cluster_assignments(
@@ -601,3 +901,10 @@ class SelfSupervisionTrainer(object):
                         image_id.item()
                     ] = cluster_id.item()
         return merged_cluster_assignments
+
+    def _is_list_of_tensors_same_shape(self, arr):
+        tensor_set = set()
+        for el in arr:
+            tensor_set.add(el)
+
+        return len(tensor_set) == 1

@@ -12,7 +12,7 @@ from classy_vision.tasks import register_task
 from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
 from vissl.config import AttrDict
 from vissl.trainer.train_task import SelfSupervisionTask
-from vissl.utils.fsdp_utils import fsdp_wrapper
+from vissl.utils.fsdp_utils import fsdp_wrapper, is_valid_fsdp_model
 from vissl.utils.misc import is_fairscale_sharded_available
 
 
@@ -38,6 +38,13 @@ class SelfSupervisionFSDPTask(SelfSupervisionTask):
         self.amp_grad_scaler = ShardedGradScaler()
         logging.info("Setting AMP: using ShardedGradScaler")
 
+    def add_dummy_layer(self):
+        """
+        Unlike DDP, FSDP works fine even no parameter requires any gradient.
+        So we can disable the hack done for DDP.
+        """
+        pass
+
     def init_distributed_data_parallel_model(self):
         """
         This method overloads the ClassificationTask class's method from ClassyVision.
@@ -58,9 +65,15 @@ class SelfSupervisionFSDPTask(SelfSupervisionTask):
         for module in self.base_model.trunk.modules():
             if isinstance(module, FSDP):
                 module._is_root = None
+        for module in self.base_model.heads.modules():
+            if isinstance(module, FSDP):
+                module._is_root = None
 
         # Then, wrap the whole model. We replace the base_model since it is used
         # when checkpoint is taken.
         fsdp_config = self.config["MODEL"]["FSDP_CONFIG"]
         self.base_model = fsdp_wrapper(self.base_model, **fsdp_config)
         self.distributed_model = self.base_model
+        assert is_valid_fsdp_model(
+            self.distributed_model
+        ), "FSDP is not setup correctly"

@@ -3,13 +3,15 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import collections
+import collections.abc
 import logging
 import os
 import random
+import sys
 import tempfile
 import time
 from functools import partial, wraps
+from typing import Tuple
 
 import numpy as np
 import pkg_resources
@@ -78,6 +80,25 @@ def is_apex_available():
     except ImportError:
         apex_available = False
     return apex_available
+
+
+def is_augly_available():
+    """
+    Check if apex is available with simple python imports.
+    """
+    try:
+        assert sys.version_info >= (
+            3,
+            7,
+            0,
+        ), "Please upgrade your python version to 3.7 or higher to use Augly."
+
+        import augly.image  # NOQA
+
+        augly_available = True
+    except (AssertionError, ImportError):
+        augly_available = False
+    return augly_available
 
 
 def find_free_tcp_port():
@@ -168,7 +189,7 @@ def set_dataloader_seeds(_worker_id: int):
     Also see https://pytorch.org/docs/stable/data.html#randomness-in-multi-process-data-loading
     """
     # numpy and random seed must be between 0 and 2 ** 32 - 1.
-    torch_seed = torch.utils.data.get_worker_info().seed % (2 ** 32)
+    torch_seed = torch.utils.data.get_worker_info().seed % (2**32)
     random.seed(torch_seed)
     np.random.seed(torch_seed)
 
@@ -246,7 +267,7 @@ def set_rng_state(state):
         torch.cuda.set_rng_state(state["cuda_rng_state"])
 
 
-class set_torch_seed(object):
+class set_torch_seed:
     def __init__(self, seed):
         assert isinstance(seed, int)
         self.rng_state = get_rng_state()
@@ -350,7 +371,7 @@ def flatten_dict(d: dict, parent_key="", sep="_"):
     items = []
     for k, v in d.items():
         new_key = parent_key + sep + k if parent_key else k
-        if isinstance(v, collections.MutableMapping):
+        if isinstance(v, collections.abc.MutableMapping):
             items.extend(flatten_dict(v, new_key, sep=sep).items())
         else:
             items.append((new_key, v))
@@ -370,3 +391,19 @@ def recursive_dict_merge(dict1, dict2):
         else:
             dict1[k] = dict2[k]
     return dict1
+
+
+def torch_version() -> Tuple[int, ...]:
+    numbering = torch.__version__.split("+")[0].split(".")[:3]
+
+    # Catch torch version if run against internal pre-releases, like `1.8.0a0fb`,
+    if not numbering[2].isnumeric():
+        # Two options here:
+        # - either skip this version (minor number check is not relevant)
+        # - or check that our codebase is not broken by this ongoing development.
+
+        # Assuming that we're interested in the second usecase more than the first,
+        # return the pre-release or dev numbering
+        numbering[2] = "0"
+
+    return tuple(int(n) for n in numbering)

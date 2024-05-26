@@ -7,6 +7,7 @@ import gc
 import logging
 
 import torch
+from classy_vision.generic.distributed_util import is_distributed_training_run
 from classy_vision.generic.util import copy_model_to_gpu
 from classy_vision.hooks import ClassyHook
 from classy_vision.losses import build_loss
@@ -14,18 +15,16 @@ from classy_vision.meters import build_meter
 from classy_vision.optim import build_optimizer, build_optimizer_schedulers
 from classy_vision.tasks import ClassificationTask, register_task
 from classy_vision.tasks.classification_task import AmpType, BroadcastBuffersMode
+from fairscale.nn import FullyShardedDataParallel
 from iopath.common.file_io import g_pathmgr
 from torch.cuda.amp import GradScaler as TorchGradScaler
 from vissl.config import AttrDict
-from vissl.data import (
-    build_dataloader,
-    build_dataset,
-    print_sampler_config,
-)
+from vissl.data import build_dataloader, build_dataset, print_sampler_config
 from vissl.models import build_model, convert_sync_bn
 from vissl.optimizers import get_optimizer_param_groups
 from vissl.utils.activation_checkpointing import manual_gradient_reduction
 from vissl.utils.checkpoint import CheckpointLoader
+from vissl.utils.ema_model import ModelEmaV2
 from vissl.utils.misc import is_apex_available, is_fairscale_sharded_available
 
 
@@ -93,12 +92,11 @@ class SelfSupervisionTask(ClassificationTask):
         self.metrics = {}  # set by the trainer
         self.start_time = -1  # set by trainer
         # time of each batch in training and testing. This can be used to get average
-        # batch time etc. batch_time is appended after every parameter update by
-        # UpdateTrainBatchTimeHook and if test phase, by UpdateTestBatchTimeHook
+        # batch time etc. batch_time is appended after every parameter update.
         self.batch_time = []  # set by trainer
         # we maintain and store the iteration in the state itself. It counts
         # total number of iterations we do in training phases. Updated
-        # after every forward pass of training step in UpdateTrainIterationNumHook.
+        # after every forward pass of training step.
         # Starts from 1
         self.iteration = 0
         # collect how many total iterations we make irrespective of train/test phase.
@@ -108,7 +106,7 @@ class SelfSupervisionTask(ClassificationTask):
         # by SetDataSamplerEpochHook hook.
         self.phase_start_time = -1  # set by the hook at start of each epoch or phase
         # for every phase, record the number of batches seen. Incremented after every
-        # forward pass by UpdateBatchesSeenHook. Reset at the start of each phase by
+        # forward pass. Reset at the start of each phase by
         # SetDataSamplerEpochHook hook. Useful for debugging.
         self.batches = -1  # set by the hook at start of each epoch or phase
         # loss curve. Reset at start of each phase/epoch by SetDataSamplerEpochHook hook.
@@ -117,6 +115,10 @@ class SelfSupervisionTask(ClassificationTask):
         # communication as much as possible
         self.set_ddp_bucket_cap_mb()
         self.use_gpu = self.device.type == "cuda"
+        # optionally save the exponential moving average (ema) of the base_model.
+        # and/or run the meters on the ema of the base_model.
+        self.ema_model = None
+        self.ema_meters = []
 
     def set_device(self):
         """
@@ -221,11 +223,33 @@ class SelfSupervisionTask(ClassificationTask):
         Set the iteration number.
         we maintain and store the iteration in the state itself. It counts
         total number of iterations we do in training phases. Updated
-        after every forward pass of training step in UpdateTrainIterationNumHook.
+        after every forward pass of training step.
         Starts from 1
         """
         assert iteration >= 0, "Iteration number must be positive"
         self.iteration = iteration
+
+    @property
+    def enable_manual_gradient_reduction(self) -> bool:
+        """
+        Lazily initial the enable flag once when model is not None.
+        """
+        if self._enable_manual_gradient_reduction is None and self.model is not None:
+            self.set_manual_gradient_reduction()
+        if self._enable_manual_gradient_reduction:
+            return True
+        return False
+
+    def set_manual_gradient_reduction(self) -> None:
+        """
+        Called during __init__ to set a flag if manual gradient reduction is enabled.
+        """
+        assert self.model is not None
+        self._enable_manual_gradient_reduction = manual_gradient_reduction(
+            self.model, self.config["DISTRIBUTED"]["MANUAL_GRADIENT_REDUCTION"]
+        )
+        if self._enable_manual_gradient_reduction:
+            logging.info("Enabling manual gradient reduction")
 
     @classmethod
     def from_config(cls, config):
@@ -403,14 +427,20 @@ class SelfSupervisionTask(ClassificationTask):
         """
         Returns meters for task.
         """
-        meter_name = self.config["METERS"].get("name", "")
-        if not meter_name:
-            return []
-        meter_params = self.config["METERS"][meter_name]
-        meter_config = {"name": meter_name, **meter_params}
-        return [build_meter(meter_config)]
+        meter_names = self.config["METERS"].get("names", [])
 
-    def _restore_model_weights(self, model):
+        if not meter_names:
+            return []
+
+        meters = []
+        for meter_name in meter_names:
+            meter_params = self.config["METERS"][meter_name]
+            meter_config = {"name": meter_name, **meter_params}
+            meters.append(build_meter(meter_config))
+
+        return meters
+
+    def _restore_model_weights(self, model, strict: bool = False):
         """
         If using a weights file to initialize the model, we load the weights
         and initialize the model. Since the weights file specified
@@ -428,10 +458,12 @@ class SelfSupervisionTask(ClassificationTask):
                 checkpoint_path=init_weights_path, device=torch.device("cpu")
             )
             logging.info(f"Checkpoint loaded: {init_weights_path}...")
-            model.init_model_from_weights_params_file(self.config, checkpoint)
+            model.init_model_from_weights_params_file(
+                self.config, checkpoint, strict=strict
+            )
         return model
 
-    def _build_model(self):
+    def _build_model(self, strict_load: bool = False):
         """
         - Builds and returns model used for task. The returned model is not copied to
           gpu yet (if using gpu) and neither wrapped with DDP yet. This is done later
@@ -492,9 +524,69 @@ class SelfSupervisionTask(ClassificationTask):
             and self.config["MODEL"]["WEIGHTS_INIT"]["PARAMS_FILE"]
             and g_pathmgr.exists(self.config["MODEL"]["WEIGHTS_INIT"]["PARAMS_FILE"])
         ):
-            model = self._restore_model_weights(model)
+            model = self._restore_model_weights(model, strict=strict_load)
 
         return model
+
+    def init_distributed_data_parallel_model(self):
+        """
+        This method overloads the ClassificationTask class's method from ClassyVision.
+        """
+        if not is_distributed_training_run():
+            return
+
+        for module in self.base_model.modules():
+            if isinstance(module, FullyShardedDataParallel):
+                raise ValueError(
+                    "DistributedDataParallel should not be used"
+                    "with a FullyShardedDataParallel model.\n"
+                    "Please set config.TRAINER.TASK_NAME='self_supervision_fsdp_task'"
+                )
+
+        # Make sure that DistributedDataParallel will be happy
+        if not any((p.requires_grad for p in module.parameters())):
+            self.add_dummy_layer()
+
+        super().init_distributed_data_parallel_model()
+
+    def set_epoch(
+        self, phase_type: str, epoch: int, start_iter: int, train_phase_idx: int
+    ):
+        if hasattr(self.dataloaders[phase_type], "sampler"):
+            sampler = self.dataloaders[phase_type].sampler
+            # (Re-)Shuffle data: set epoch of distributed (or fairstore) sampler
+            # Resume from the iteration if valid
+            self.set_train_epoch_start_iter(sampler, epoch, start_iter, train_phase_idx)
+            print_sampler_config(sampler)
+
+        # call set_epoch and set_start_iter for AirstoreDataset since it handles
+        # shuffle and sample skipping behavior internally
+        dataset = self.datasets[phase_type]
+        if hasattr(dataset, "data_objs"):
+            for data_obj in dataset.data_objs:
+                self.set_train_epoch_start_iter(
+                    data_obj, epoch, start_iter, train_phase_idx
+                )
+
+    def set_train_epoch_start_iter(
+        self, dataset_or_sampler, epoch: int, start_iter: int, train_phase_idx: int
+    ):
+        # (Re-)Shuffle data: set epoch of distributed (or fairstore) sampler
+        if hasattr(dataset_or_sampler, "set_epoch"):
+            dataset_or_sampler.set_epoch(epoch)
+        # Resume from the iteration if valid
+        if hasattr(dataset_or_sampler, "set_start_iter"):
+            dataset_or_sampler.set_start_iter(start_iter)
+
+        if hasattr(dataset_or_sampler, "set_train_phase_idx"):
+            dataset_or_sampler.set_train_phase_idx(train_phase_idx)
+
+    def num_phase_samples(self, phase_type: str) -> int:
+        """
+        Number of samples in a phase.
+        """
+        dataset = self.datasets[phase_type.lower()]
+        return dataset.num_samples()
 
     def _compute_start_iter_from_checkpoint(self, phase_type) -> int:
         # used for calculating the start iteration (count from current epoch) when resuming
@@ -584,6 +676,8 @@ class SelfSupervisionTask(ClassificationTask):
         # with the CPU inputs. When the model runs, it rather sends CUDA.
         self.base_model.to(self.device)
 
+        self._set_ema_model_state(state)
+
         for meter, meter_state in zip(self.meters, state["meters"]):
             meter.set_classy_state(meter_state)
         self.optimizer.set_classy_state(state["optimizer"])
@@ -627,6 +721,16 @@ class SelfSupervisionTask(ClassificationTask):
         if self.train and self.train_phase_idx >= 0:
             self.optimizer.on_epoch(self.where)
 
+    def _set_ema_model_state(self, state):
+        """
+        Only used if EmaMetersHook is enabled.
+        """
+        if self.ema_model is not None:
+            logging.info("Loading ema model")
+            self.ema_model.module.set_classy_state(state["ema_model"])
+            for meter, meter_state in zip(self.ema_meters, state["ema_meters"]):
+                meter.set_classy_state(meter_state)
+
     def _update_classy_state(self, state_dict=None):
         """
         Updates classy state with the provided state dict from a checkpoint.
@@ -648,7 +752,9 @@ class SelfSupervisionTask(ClassificationTask):
         """
         broadcast_buffers = self.config["DISTRIBUTED"]["BROADCAST_BUFFERS"]
         if broadcast_buffers:
-            logging.info("Broadcast model BN buffers from master on every forward pass")
+            logging.info(
+                "Broadcast model BN buffers from primary on every forward pass"
+            )
             broadcast_buffers_enum_mode = BroadcastBuffersMode.FORWARD_PASS
             self.set_distributed_options(
                 broadcast_buffers_mode=broadcast_buffers_enum_mode
@@ -713,7 +819,15 @@ class SelfSupervisionTask(ClassificationTask):
                 self.base_model, self.optimizer.optimizer, **self.amp_args
             )
 
+        # Create EMA average of the model if hook is specified.
+        ema_config = self.config["HOOKS"]["EMA_MODEL"]
+        if ema_config["ENABLE_EMA_METERS"] or ema_config["SAVE_EMA_MODEL"]:
+            self._create_ema_model()
+
         # Restore an hypothetical checkpoint
+        # - For DDP model, the load will load the full model on all ranks
+        # - For FSDP model, the load will automatically dispatch to the shard
+        #   to be loaded by the current rank
         vissl_state_dict = None
         if self.checkpoint_path is not None:
             self.checkpoint = CheckpointLoader.load_and_broadcast_checkpoint(
@@ -721,16 +835,17 @@ class SelfSupervisionTask(ClassificationTask):
                 checkpoint_path=self.checkpoint_path,
                 device=torch.device("cpu"),
             )
-
-            self.iteration = self.checkpoint["iteration"]
-            self.local_iteration_num = self.checkpoint["iteration_num"]
-            vissl_state_dict = self.checkpoint.get("classy_state_dict")
+            if self.checkpoint is not None:
+                self.iteration = self.checkpoint["iteration"]
+                self.local_iteration_num = self.checkpoint["iteration_num"]
+                vissl_state_dict = self.checkpoint.get("classy_state_dict")
+            else:
+                raise ValueError(f"Could not load checkpoint: {self.checkpoint_path}")
 
         current_train_phase_idx = (
             vissl_state_dict["train_phase_idx"] + 1 if vissl_state_dict else 0
         )
 
-        
         self.datasets, self.data_and_label_keys = self.build_datasets(
             current_train_phase_idx
         )
@@ -740,7 +855,7 @@ class SelfSupervisionTask(ClassificationTask):
             self.datasets["train"].set_classy_state(
                 vissl_state_dict.get("train_dataset_iterator")
             )
-        
+
         self.dataloaders = self.build_dataloaders(
             pin_memory=pin_memory, current_train_phase_idx=current_train_phase_idx
         )
@@ -754,38 +869,6 @@ class SelfSupervisionTask(ClassificationTask):
 
         return self._update_classy_state(vissl_state_dict)
 
-    def set_epoch(
-        self, phase_type: str, epoch: int, start_iter: int, train_phase_idx: int
-    ):
-        if hasattr(self.dataloaders[phase_type], "sampler"):
-            sampler = self.dataloaders[phase_type].sampler
-            # (Re-)Shuffle data: set epoch of distributed (or fairstore) sampler
-            # Resume from the iteration if valid
-            self.set_train_epoch_start_iter(sampler, epoch, start_iter, train_phase_idx)
-            print_sampler_config(sampler)
-
-        # call set_epoch and set_start_iter for AirstoreDataset since it handles
-        # shuffle and sample skipping behavior internally
-        dataset = self.datasets[phase_type]
-        if hasattr(dataset, "data_objs"):
-            for data_obj in dataset.data_objs:
-                self.set_train_epoch_start_iter(
-                    data_obj, epoch, start_iter, train_phase_idx
-                )
-
-    def set_train_epoch_start_iter(
-        self, dataset_or_sampler, epoch: int, start_iter: int, train_phase_idx: int
-    ):
-        # (Re-)Shuffle data: set epoch of distributed (or fairstore) sampler
-        if hasattr(dataset_or_sampler, "set_epoch"):
-            dataset_or_sampler.set_epoch(epoch)
-        # Resume from the iteration if valid
-        if hasattr(dataset_or_sampler, "set_start_iter"):
-            dataset_or_sampler.set_start_iter(start_iter)
-
-        if hasattr(dataset_or_sampler, "set_train_phase_idx"):
-            dataset_or_sampler.set_train_phase_idx(train_phase_idx)
-
     def prepare_extraction(self, pin_memory: bool = False):
         """
         Prepares a light-weight task for feature extraction on multi-gpu. The model
@@ -793,36 +876,33 @@ class SelfSupervisionTask(ClassificationTask):
         """
         self.datasets, self.data_and_label_keys = self.build_datasets()
         self.dataloaders = self.build_dataloaders(pin_memory=pin_memory)
-        self.base_model = self._build_model()
+        # build the meters in case the extraction is for predictions.
+        self.meters = self._build_meters()
+        self.base_model = self._build_model(strict_load=True)
         if self.device.type == "cuda":
             self.base_model = copy_model_to_gpu(self.base_model)
         return self
 
-    @property
-    def enable_manual_gradient_reduction(self) -> bool:
+    def add_dummy_layer(self):
         """
-        Lazily initial the enable flag once when model is not None.
+        In case of feature evaluation mode, if we are freezing both trunk and
+        head, DDP won't work as there are no parameters in the model. Adding
+        the dummy head will lead to features being not right. So we rather
+        add the dummy layer to the model and use DDP. We copy the model to
+        gpu (if using gpus) after the new dummy layer addition.
         """
-        if self._enable_manual_gradient_reduction is None and self.model is not None:
-            self.set_manual_gradient_reduction()
-        if self._enable_manual_gradient_reduction:
-            return True
-        return False
+        fully_frozen_model = self.base_model.is_fully_frozen_model()
+        if fully_frozen_model:
+            self.base_model.dummy_layer = torch.nn.Linear(4, 4)
+            if self.device.type == "cuda":
+                self.base_model = copy_model_to_gpu(self.base_model)
 
-    def set_manual_gradient_reduction(self) -> None:
-        """
-        Called during __init__ to set a flag if manual gradient reduction is enabled.
-        """
-        assert self.model is not None
-        self._enable_manual_gradient_reduction = manual_gradient_reduction(
-            self.model, self.config["DISTRIBUTED"]["MANUAL_GRADIENT_REDUCTION"]
+    def _create_ema_model(self):
+        logging.info("Building the EMA model.")
+        ema_model = build_model(self.config["MODEL"], self.config["OPTIMIZER"])
+        self.ema_model = ModelEmaV2(
+            ema_model,
+            decay=self.config["HOOKS"]["EMA_MODEL"]["DECAY"],
+            device=self.config["HOOKS"]["EMA_MODEL"]["EMA_DEVICE"],
         )
-        if self._enable_manual_gradient_reduction:
-            logging.info("Enabling manual gradient reduction")
-
-    def num_phase_samples(self, phase_type: str) -> int:
-        """
-        Number of samples in a phase.
-        """
-        dataset = self.datasets[phase_type.lower()]
-        return dataset.num_samples()
+        self.ema_model.set(self.base_model)

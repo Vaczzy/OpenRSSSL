@@ -17,7 +17,7 @@ from vissl.utils.svm_utils.evaluate import get_precision_recall
 
 # Turning it into a class to encapsulate the training and evaluation logic
 # together unlike OSS benchmark which has 3 scripts.
-class SVMTrainer(object):
+class SVMTrainer:
     """
     SVM trainer that takes care of training (using k-fold cross validation),
     and evaluating the SVMs
@@ -74,7 +74,7 @@ class SVMTrainer(object):
             base = self.config["costs"]["base"]
             start_num, end_num = self.config["costs"]["power_range"]
             for num in range(start_num, end_num):
-                costs_list.append(base ** num)
+                costs_list.append(base**num)
         self.costs_list = costs_list
         logging.info("Training SVM for costs: {}".format(costs_list))
         return costs_list
@@ -96,7 +96,7 @@ class SVMTrainer(object):
 
     def get_best_cost_value(self):
         """
-        During the SVM training, we write the cross vaildation
+        During the SVM training, we write the cross validation
         AP value for training at each class and cost value
         combination. We load the AP values and for each
         class, determine the cost value that gives the maximum
@@ -105,9 +105,7 @@ class SVMTrainer(object):
         """
         crossval_ap_file = f"{self.output_dir}/crossval_ap.npy"
         chosen_cost_file = f"{self.output_dir}/chosen_cost.npy"
-        if g_pathmgr.exists(crossval_ap_file) and g_pathmgr.exists(
-            chosen_cost_file
-        ):
+        if g_pathmgr.exists(crossval_ap_file) and g_pathmgr.exists(chosen_cost_file):
             self.chosen_cost = load_file(chosen_cost_file)
             self.train_ap_matrix = load_file(crossval_ap_file)
             return self.chosen_cost

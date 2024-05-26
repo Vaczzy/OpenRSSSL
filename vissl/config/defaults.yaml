@@ -33,8 +33,13 @@
 #        +config/pretrain/simclr/my_sub_folder=my_file_name \
 #        +config.MY_NEW_KEY=MY_VALUE
 defaults:
+  - _self_
   # you must specify the base config you want to run
   - config: ???
+
+# By default, make hydra verbose
+hydra:
+  verbose: True
 
 ######################### versioning ###################################
 # this config version is checked with the VISSL latest config version in
@@ -83,6 +88,24 @@ config:
   # ----------------------------------------------------------------------------------- #
   HOOKS:
     # ----------------------------------------------------------------------------------- #
+    # Whether or not to check if the loss or model_output is NaN.
+    # ----------------------------------------------------------------------------------- #
+    CHECK_NAN: True
+    EMA_MODEL:
+      # Save an exponential moving average of the model weights.
+      SAVE_EMA_MODEL: False
+      # Calculate the meters for the model.
+      ENABLE_EMA_METERS: False
+      # after how many iterations should you update the EMA.
+      UPDATE_ITER: 1
+      # Decimal after what percent of the training to start the EMA. Defaults is 0.05 or 5%.
+      WARMUP: 0.05
+      # decay to use for the exponential moving average.
+      DECAY: 0.9999
+      # device to put EMA model on: gpu | cpu.
+      EMA_DEVICE: gpu
+
+    # ----------------------------------------------------------------------------------- #
     # Perf hooks for several steps of model training
     # ----------------------------------------------------------------------------------- #
     PERF_STATS:
@@ -93,7 +116,7 @@ config:
       PERF_STAT_FREQUENCY: -1
       # if we want to print the rolling average batch time, set the value below to number of
       # training iterations over which we want to print average. The average is printed for
-      # master gpu.
+      # primary gpu.
       ROLLING_BTIME_FREQ: -1
 
     # ----------------------------------------------------------------------------------- #
@@ -208,7 +231,17 @@ config:
     TRAIN:
       # A sampler that cuts the dataset in a deterministic way
       USE_DEBUGGING_SAMPLER: False
-
+      # A sampler that creates batches with a limited number of classes
+      STRATIFIED_SAMPLER:
+        ENABLED: False
+        CLASSES_PER_BATCH: 2
+        STEP_PER_EPOCH: 1250
+        UNIQUE_CLASSES: False
+      # A sampler that creates batches with a skewed distribution following
+      # a power law
+      POWER_LAW_SAMPLER:
+        ENABLED: False
+        POWER: 1.0
       # if we want to resume the data sampler as well from a previous iteration. By default
       # pytorch sampler resumes from every epoch.
       USE_STATEFUL_DISTRIBUTED_SAMPLER: False
@@ -254,6 +287,13 @@ config:
       # we allow using a queue to capture the valid and seen images if users prefer to
       # not use the gray images during training. See `ENABLE_QUEUE_DATASET` option below.
       DEFAULT_GRAY_IMG_SIZE: 224
+      # if the image generated are synthetic images, whether or not we want to
+      # generate gray images or random images (only makes an effect if the
+      # data source is synthetic)
+      RANDOM_SYNTHETIC_IMAGES: False
+      # how many different labels we want for the synthetic dataset
+      # only useful for testing
+      RANDOM_SYNTHETIC_LABELS: 0
       # number of unique samples in minibatch per gpu (or per device)
       BATCHSIZE_PER_REPLICA: 256
       # list of data transforms to apply on the data
@@ -358,6 +398,17 @@ config:
     TEST:
       # A sampler that cuts the dataset in a deterministic way
       USE_DEBUGGING_SAMPLER: False
+      # A sampler that creates batches with a limited number of classes
+      STRATIFIED_SAMPLER:
+        ENABLED: False
+        CLASSES_PER_BATCH: 2
+        STEP_PER_EPOCH: 1250
+        UNIQUE_CLASSES: False
+      # A sampler that creates batches with a skewed distribution following
+      # a power law
+      POWER_LAW_SAMPLER:
+        ENABLED: False
+        POWER: 1.0
       # if we want to resume the data sampler as well from a previous iteration
       USE_STATEFUL_DISTRIBUTED_SAMPLER: False
       # if users want to replace certain prefixes from the image paths and replace them with
@@ -372,6 +423,8 @@ config:
       LABEL_PATHS: []
       MMAP_MODE: True
       DEFAULT_GRAY_IMG_SIZE: 224
+      RANDOM_SYNTHETIC_IMAGES: False
+      RANDOM_SYNTHETIC_LABELS: 0
       BATCHSIZE_PER_REPLICA: 256
       TRANSFORMS: []
       COLLATE_FUNCTION: "default_collate"
@@ -407,14 +460,46 @@ config:
   # multiple meters are calculated for multiple model outputs (for example: multiple
   # layers output) and metric is calculated on the same input target.
   METERS:
+    # [DEPRECATED]: please use names below instead. This is the name of the meter.
     name: ""
+    # names of meters, corresponds to the string used in @register_meter method.
+    names: []
     # whether to calculate the meter during training as well. Sometimes, if the training
     # data size is too big, it could be hard to compute the meter on training set. Hence
     # we might want to disable it.
     enable_training_meter: True
+    # When model output mask is True, only classes present in the labels list will be
+    # considered for the meters. For example, if our labels only have 200 classes,
+    # but the model output has 1000 classes, the model output for 800 classes will
+    # be cast to -inf.
+    model_output_mask: False
     # calculate top-k meter on single target multiple ouput setting
     accuracy_list_meter:
       # number of accuracy meters. In cases like linear evaluation of feature, we perform
+      # evaluation of several layers and there's a separate meter for each layer.
+      # num_meters basically specifices number of meters.
+      num_meters: 1
+      # what topk values to calculate. Example topk_values = [1, 5] means top1 and top5
+      # both will be calculated
+      topk_values: [1]
+      # names of the meter. Useful in cases where we have several meters. For the linear
+      # feature evaluation workflows, meter name is automatically inferred.
+      meter_names: []
+    # calculate top-k meter on single target multiple ouput setting
+    precision_at_k_list_meter:
+      # number of precision meters. In cases like linear evaluation of feature, we perform
+      # evaluation of several layers and there's a separate meter for each layer.
+      # num_meters basically specifices number of meters.
+      num_meters: 1
+      # what topk values to calculate. Example topk_values = [1, 5] means top1 and top5
+      # both will be calculated
+      topk_values: [1]
+      # names of the meter. Useful in cases where we have several meters. For the linear
+      # feature evaluation workflows, meter name is automatically inferred.
+      meter_names: []
+    # calculate top-k meter on single target multiple ouput setting
+    recall_at_k_list_meter:
+      # number of recall meters. In cases like linear evaluation of feature, we perform
       # evaluation of several layers and there's a separate meter for each layer.
       # num_meters basically specifices number of meters.
       num_meters: 1
@@ -439,7 +524,6 @@ config:
       # names of the meter. Useful in cases where we have several meters. For the linear
       # feature evaluation workflows, meter name is automatically inferred.
       meter_names: []
-
   # ----------------------------------------------------------------------------------- #
   # MACHINE (cpu, gpu)
   # ----------------------------------------------------------------------------------- #
@@ -450,6 +534,8 @@ config:
   # MODEL
   # ----------------------------------------------------------------------------------- #
   MODEL:
+    # default model. User can define their own model and use that instead.
+    BASE_MODEL_NAME: multi_input_output_model
     # sometimes we can avoid CUDA OOM issues by clearing out the cache. Clearing out cache
     # is slow so chose wisely.
     CUDA_CACHE:
@@ -504,6 +590,11 @@ config:
       # parameters that serves as threshold to decide if a layer is "big"
       AUTO_WRAP_THRESHOLD: 0
       AMP_TYPE: "01"
+      # Whether or not to force synchronize between layers:
+      # Useful for debugging memory issues with FSDP, beware that setting
+      # this flag will disable asynchronous overlap of communication and
+      # computation, decreasing performance sometimes significantly
+      FORCE_SYNC_CUDA: False
       # Parameters of fairscale FSDP
       flatten_parameters: True
       mixed_precision: True
@@ -530,6 +621,8 @@ config:
       # if we want to evaluate the full model, this requires loading the head weights as well
       # from model weights file. In this case, set the following to True.
       EVAL_TRUNK_AND_HEAD: False
+      # whether to assert that the head layers shape matches exactly
+      ASSERT_HEAD_LAYER_SHAPE_INIT: True
       # whether features should be flattened to result in N x D feature shape
       SHOULD_FLATTEN_FEATS: True
       # model features that should be evaluated for linear classification and what
@@ -578,10 +671,25 @@ config:
         LAYER4_STRIDE: 2
 
       # ------------------------------------------------------------- #
+      # SimCLR-v2 ResNet params that includes selective kernel
+      # ------------------------------------------------------------- #
+      RESNETS_SK:
+        DEPTH: 152
+        WIDTH_MULTIPLIER: 3
+        SK_RATIO: 0.0625
+
+      # ------------------------------------------------------------- #
       # EfficientNet params
       # ------------------------------------------------------------- #
       # follow classy vision for efficientNet settings
       EFFICIENT_NETS: {}
+
+      # ------------------------------------------------------------- #
+      # MobileNets params
+      # ------------------------------------------------------------- #
+      MOBILE_NET:
+        NAME: "mobilenetv3_large_100"
+        TIMM_BN: False
 
       # ------------------------------------------------------------- #
       # RegNet params
@@ -615,6 +723,101 @@ config:
         DROP_PATH_RATE: 0
         QKV_BIAS: False # Bias for QKV in attention layers.
         QK_SCALE: False # Scale
+        # Optimisation tricks:
+        # * CHECKPOINT_MLP allows to checkpoint each MLP in blocks
+        # * CHECKPOINT_BLOCKS will checkpoint the entire block instead
+        CHECKPOINT_MLP: False
+        CHECKPOINT_BLOCK: False
+        # Masked Image Modelling objective
+        MASKED_IMAGE_MODELING:
+          # Available types of Masked Image Modeling include:
+          # - '': Disable Masked Image modeling
+          # - 'ibot': Based on IBOT: https://arxiv.org/pdf/2111.07832.pdf
+          # - 'msn': Based on MSN: https://arxiv.org/pdf/2204.07141.pdf
+          NAME: ''
+          # Parameters provided to the Masked Generator
+          PARAMS: {}
+
+      # ------------------------------------------------------------- #
+      # XCiT (https://arxiv.org/abs/2106.09681)
+      # default config is that of xcit_small_12_p16
+      # ------------------------------------------------------------- #
+      XCIT:
+        name:
+        IMAGE_SIZE: 224
+        PATCH_SIZE: 16
+        HIDDEN_DIM: 384
+        NUM_LAYERS: 12
+        NUM_HEADS: 8
+        MLP_RATIO: 4.0
+        DROPOUT_RATE: 0
+        ATTENTION_DROPOUT_RATE: 0
+        DROP_PATH_RATE: 0.05
+        ETA: 1
+        TOKENS_NORM: True
+        QKV_BIAS: True # Bias for QKV in attention layers.
+        QK_SCALE: False # Scale
+        CHECKPOINT_XCA_BLOCK: False
+        CHECKPOINT_ATTN_BLOCK: False
+
+      # ------------------------------------------------------------- #
+      # Swin-Transformer parameters
+      # https://arxiv.org/abs/2103.14030
+      # These default parameters correspond to the SwinT-Tiny variant
+      # ------------------------------------------------------------- #
+      SWIN_TRANSFORMER:
+        name:
+        IMAGE_SIZE: 224
+        PATCH_SIZE: 4
+        EMBED_DIM: 96
+        DEPTHS: [2, 2, 6, 2]
+        NUM_HEADS: [3, 6, 12, 24]
+        WINDOW_SIZE: 7
+        MLP_RATIO: 4.0
+        # MLP and projection layer dropout rate
+        DROPOUT_RATE: 0
+        # Attention dropout rate
+        ATTENTION_DROPOUT_RATE: 0
+        DROP_PATH_RATE: 0.1
+        QKV_BIAS: True
+        QK_SCALE: False # Scale
+
+      # ------------------------------------------------------------- #
+      # BEiT.
+      # https://github.com/microsoft/unilm/blob/master/beit/modeling_finetune.py
+      # https://arxiv.org/pdf/2106.08254.pdf
+      # ------------------------------------------------------------- #
+      BEIT:
+        IMAGE_SIZE: 224
+        PATCH_SIZE: 16
+        NUM_LAYERS: 12
+        NUM_HEADS: 12
+        HIDDEN_DIM: 768
+        MLP_RATIO: 4.0
+        # MLP and projection layer dropout rate
+        DROPOUT_RATE: 0
+        # Attention dropout rate
+        ATTENTION_DROPOUT_RATE: 0
+        # Stochastic depth dropout rate. Turning on stochastic depth and
+        # using aggressive augmentation is essentially the difference
+        # between a DeiT and a ViT.
+        DROP_PATH_RATE: 0
+        QKV_BIAS: False # Bias for QKV in attention layers.
+        QK_SCALE: False # Scale
+        USE_ABS_POS_EMB: True
+        USE_REL_POS_BIAS: False
+        USE_SHARED_REL_POS_BIAS: False
+        USE_MEAN_POOLING: True
+        INIT_VALUES: False
+
+      # ------------------------------------------------------------- #
+      # Parameters unique to the ConvNext
+      # https://arxiv.org/pdf/2201.03545.pdf
+      # -------------------------------------------------------------
+      CONVNEXT:
+        DEPTH: [3, 3, 27, 3]
+        DIMS: [96, 192, 384, 768]
+        DROP_PATH_RATE: 0.0
 
       # ------------------------------------------------------------- #
       # Parameters unique to the ConViT and not used for standard vision
@@ -717,8 +920,8 @@ config:
     # ----------------------------------------------------------------------------------- #
     AMP_PARAMS:
       USE_AMP: False
-      # Use O1 as it is robust and stable than O3. If you want to use O3, we recommend
-      # the following setting:
+      # Only applicable for Apex AMP_TYPE.
+      # Use O1 as it is robust and stable than O3. If you want to use O3, we recommend the following setting:
       # {"opt_level": "O3", "keep_batchnorm_fp32": True, "master_weights": True, "loss_scale": "dynamic"}
       AMP_ARGS: {"opt_level": "O1"}
       # we support pytorch amp as well which is availale in pytorch>=1.6.
@@ -832,16 +1035,6 @@ config:
       # following parameters are auto-filled before the loss is created.
       num_train_samples: -1    # @auto-filled
 
-    # Our Loss:
-    false_loss:
-      temperature: 0.5
-      confidence_weight: 1
-      positive_threshold: 0.9 # 默认为0.9
-      buffer_params:
-        world_size: 64                # automatically inferred
-        embedding_dim: 128
-        effective_batch_size: 4096    # automatically inferred
-
     # ----------------------------------------------------------------------------------- #
     # SimCLR InfoNCE LOSS (Specific to SimCLR https://arxiv.org/abs/2002.05709)
     # ----------------------------------------------------------------------------------- #
@@ -916,8 +1109,37 @@ config:
       teacher_temp_warmup_iters: 37500 # 30 epochs
       crops_for_teacher: [0, 1]
       ema_center: 0.9
-      normalize_last_layer: true
       output_dim: 65536  # automatically inferred from model HEAD settings
+
+    # ----------------------------------------------------------------------------------- #
+    #  iBOT Loss (https://arxiv.org/pdf/2111.07832.pdf)
+    # ----------------------------------------------------------------------------------- #
+    ibot_loss:
+      teacher_momentum: 0.996
+      warmup_teacher_temp: 0.04
+      teacher_temp: 0.04
+      warmup_teacher_patch_temp: 0.04
+      teacher_patch_temp: 0.07
+      warmup_teacher_temp_epochs: 30
+      student_temp: 0.1
+      center_momentum: 0.9
+      center_momentum2: 0.9
+      lambda1: 1.0
+      lambda2: 1.0
+      mim_start_epoch: 0
+      num_global_crops: 2  # Auto-completed
+      num_local_crops: 8  # Auto-completed
+      out_dim: 8192  # Auto-completed
+      patch_out_dim: 8192  # Auto-completed
+      num_epochs: 10  # Auto-completed
+
+    # ----------------------------------------------------------------------------------- #
+    #  MSN Loss (https://arxiv.org/pdf/2204.07141.pdf)
+    # ----------------------------------------------------------------------------------- #
+    msn_loss:
+      momentum: 0.996
+      temperature: 0.1
+      output_dim: 1024    # automatically inferred from model HEAD settings
 
     # -----------------------------------------------------------------------------------#
     # DeepCluster V2 LOSS (baselines in SwAV https://arxiv.org/abs/2006.09882)
@@ -951,6 +1173,59 @@ config:
       lambda_: 0.0051
       scale_loss: 0.024
       embedding_dim: 8192
+
+    # ----------------------------------------------------------------------------------- #
+    #  RoB-SwAV distillation loss
+    # ----------------------------------------------------------------------------------- #
+    swav_distillation_loss:
+      temperature: 0.1
+      use_double_precision: False
+      num_iters: 3
+      epsilon: 0.03
+      num_crops: 6
+      num_prototypes: [3000]
+      output_dir: "."
+      temp_hard_assignment_iters: 0
+      local_queue_length: 0
+      queue_start_iter: 0
+      normalize_student_feats: false
+      use_student_prototypes: true
+      use_teacher_prototypes: false
+      use_two_crops_for_teacher: true
+      swapped_assignment: false
+
+    # ----------------------------------------------------------------------------------- #
+    #  RoB-DINO distillation loss
+    # ----------------------------------------------------------------------------------- #
+    dino_distillation_loss:
+      swapped_assignment: false
+      teacher_num_crops: 2
+      teacher_temperature: 0.07
+      student_num_crops: 10
+      student_temperature: 0.1
+
+    # ----------------------------------------------------------------------------------- #
+    #  RoB-iBOT distillation loss
+    # ----------------------------------------------------------------------------------- #
+    ibot_distillation_loss:
+      swapped_assignment: false
+      use_teacher_prototypes: false
+      num_global_crops: 2
+      student_num_crops: 12
+      student_temp: 0.1
+      teacher_temp: 0.07
+      teacher_patch_temp: 0.07
+      lambda1: 1.0
+      lambda2: 1.0
+
+    # ----------------------------------------------------------------------------------- #
+    #  RoB-MSN distillation loss
+    # ----------------------------------------------------------------------------------- #
+    msn_distillation_loss:
+      swapped_assignment: False
+      student_temperature: 0.1
+      teacher_num_crops: 2
+      student_num_crops: 12
 
   # ----------------------------------------------------------------------------------- #
   # OPTIMIZER
@@ -1056,6 +1331,16 @@ config:
     # is wrapped by FSDP with flattening, individual parameters inside the model are
     # replaced with a flattened parameter. Therefore, this option is needed in that case.
     construct_single_param_group_only: False
+    # Under certain cases, we want to specify a customized way to create the parameter
+    # groups. The following allows you to register a param group constructor by name
+    param_group_constructor: 'default'
+    # We support using a different LR for different layers following the
+    # procedure used in BEIT (https://arxiv.org/pdf/2106.08254.pdf) for
+    # fine-tuning Vision Transformers
+    # Used by the parameter group constructors:
+    #   config.OPTIMIZER.param_group_constructor='lr_decay'
+    layer_wise_lr_decay:
+      decay: 0.9
 
   # ----------------------------------------------------------------------------------- #
   # Options specific to the "extract_feature" engine
@@ -1069,7 +1354,65 @@ config:
     #   as soon as they are computed (accumulate none in memory)
     # - if set to -1, the extract_engine engine will dump features
     #   at the very end (accumulate all in memory)
-    CHUNK_THRESHOLD: 0
+    CHUNK_THRESHOLD: -1
+    # if user wants to save the extracted features as img_filename.npy
+    # we simply save the features that way
+    MAP_FEATURES_TO_IMG_NAME: False
+
+  # ----------------------------------------------------------------------------------- #
+  # DISTILLATION CONFIG (used in case a distllation loss is set)
+  # ----------------------------------------------------------------------------------- #
+  DISTILLATION:
+    eager_teacher_init: False
+    TEACHER_MODEL:
+      BASE_MODEL_NAME: multi_input_output_model
+      INPUT_TYPE: "rgb"
+      MULTI_INPUT_HEAD_MAPPING: []
+      SINGLE_PASS_EVERY_CROP: False
+      FEATURE_EVAL_SETTINGS:
+        # Teacher should be in evaluation mode with head and trunk frozen
+        # Overriding these options would be unwise
+        EVAL_MODE_ON: True
+        FREEZE_TRUNK_ONLY: False
+        FREEZE_TRUNK_AND_HEAD: True
+        EXTRACT_TRUNK_FEATURES_ONLY: False
+        ASSERT_HEAD_LAYER_SHAPE_INIT: True
+        EVAL_TRUNK_AND_HEAD: True
+        SHOULD_FLATTEN_FEATS: True
+        LINEAR_EVAL_FEAT_POOL_OPS_MAP: []
+      TRUNK:
+        # Supports the same options as the config.MODEL.TRUNK
+        # Please refer to config.MODEL.TRUNK to see the list of trunks
+        # that are supported by VISSL
+        NAME: "resnet"
+      HEAD:
+        PARAMS: [["mlp", {"dims": [2048, 1000]}]]
+        BATCHNORM_EPS: 1e-5
+        BATCHNORM_MOMENTUM: 0.1
+        PARAMS_MULTIPLIER: 1.0
+      WEIGHTS_INIT:
+        # Teacher weights should be initialized for distillation to make sense
+        # Please override these options to specify the path of the teacher weights
+        # as well as customize the supported format
+        # Please refer to "config.MODEL.WEIGHTS_INIT" for details on these options
+        PARAMS_FILE: "please specify teacher model weights"
+        STATE_DICT_KEY_NAME: "classy_state_dict"
+        SKIP_LAYERS: ["num_batches_tracked"]
+        REMOVE_PREFIX: ""
+        APPEND_PREFIX: ""
+      FSDP_CONFIG:
+        AUTO_SETUP_FSDP: False
+        AUTO_WRAP_THRESHOLD: 0
+        flatten_parameters: True
+        mixed_precision: True
+        fp32_reduce_scatter: False
+        compute_dtype: float32
+        bucket_cap_mb: 0
+        clear_autocast_cache: True
+        verbose: True
+      ACTIVATION_CHECKPOINTING:
+        USE_ACTIVATION_CHECKPOINTING: False
+        NUM_ACTIVATION_CHECKPOINTING_SPLITS: 2
 
   # ----------------------------------------------------------------------------------- #
   # CLUSTERFIT APPROACH (https://arxiv.org/abs/1912.03330)
@@ -1101,6 +1444,21 @@ config:
       # * if 0, dimensionality reduction is disabled
       # * if > 0, define the number of target dimensions of PCA
       DIMENSIONALITY_REDUCTION: 0
+
+  # ----------------------------------------------------------------------------------- #
+  # Ranking features using faiss
+  # ----------------------------------------------------------------------------------- #
+  RANKING:
+    USE_GPU: False
+    # currently we only support faiss backend ranking.
+    RANKING_BACKEND: "faiss"
+    NORMALIZE_FEATS: True
+    APPLY_PCA: False
+    PCA_DIM: 128
+    FEATURES:
+      DATA_PARTITION: "TRAIN"
+      DATASET_NAME: ""
+      LAYER_NAME: ""
 
   # ----------------------------------------------------------------------------------- #
   # TRAINER (define your train step)
@@ -1262,6 +1620,9 @@ config:
       # low shot values to consider. k=2 means 2 positives for a class and 2 negative from every
       # remaining class
       k_values: [1, 2, 4, 8, 16, 32, 64, 96]
+  # If empty, SVM will run extract features and run SVM on these
+  # If not empty, SVM will use the path to find the features
+  SVM_FEATURES_PATH: ""
 
   # ----------------------------------------------------------------------------------- #
   # INSTANCE RETRIEVAL (benchmark)
@@ -1290,6 +1651,8 @@ config:
     # image scale and averaged. Default is [1], meaning that only the full
     # image is processed.
     IMG_SCALINGS: [1]
+    # valid options are cosine_similarity (suggested) and l2.
+    SIMILARITY_MEASURE: cosine_similarity
     ######################## Features Processing Hypers #######################
     # Resize larger side of image to RESIZE_IMG pixels (e.g. 800)
     RESIZE_IMG: 1024
@@ -1310,12 +1673,17 @@ config:
     # Whether or not to apply L2 norm after the features have been post-processed.
     # Normalization is heavily recommended based on experiments run.
     NORMALIZE_FEATURES: True
+    # Whether or not to center crop the image.
+    CENTER_CROP: False
     ######################## Misc #######################
     # Whether or not to save the retrieval ranking scores (metrics, rankings, similarity scores)
     SAVE_RETRIEVAL_RANKINGS_SCORES: True
     # Whether or not to save the features that were extracted
     SAVE_FEATURES: False
-
+    # Whether or not to use the features extraction engine.
+    USE_FEATURE_EXTRACTION_ENGINE: False
+    # If a non-empty string, directly loads the features extracted from the feature extraction engine.
+    FEATURE_EXTRACTION_DIR: ""
 
   # ----------------------------------------------------------------------------------- #
   # K-NEAREST NEIGHBOR (benchmark)
@@ -1323,7 +1691,47 @@ config:
   NEAREST_NEIGHBOR:
     # temperature value to use for the k-nn
     SIGMA: 0.1
-    # number of neighbors to consider.
+    # Number of neighbors to consider.
+    # If provided a list, kNN will be run once for each element of the list
     TOPK: 200
     # if the features should be l2 normalized, set this to True
     L2_NORM_FEATS: False
+    # whether or not to store the features on GPU
+    USE_CUDA: True
+    # whether or not to use the implementation with low memory usage
+    OPTIMIZE_MEMORY: False
+    # Where to find the extracted features and whether or not we should extract them
+    FEATURES:
+      # If empty, will run the extract features, if not, use the path to find the features
+      PATH: ""
+
+  # ----------------------------------------------------------------------------------- #
+  # LOGISTIC REGRESSION (benchmark)
+  # ----------------------------------------------------------------------------------- #
+  LOW_SHOT_BENCHMARK:
+    # Which evaluation method to pick to choose among:
+    # - logistic_regression
+    # - svm
+    METHOD: 'logistic_regression'
+    # Configuration if we use logistic regression for evaluation
+    LOGISTIC_REGRESSION:
+      # Regularisation term for L2 penalty
+      LAMBDA: 0.025
+      # Number of splits of the train set and their seeds
+      SEEDS: [0]
+    # Where to find the extracted features and whether or not we should extract them
+    FEATURES:
+      # If empty, will run the extract features, if not, use the path to find the features
+      PATH: ""
+
+  # ----------------------------------------------------------------------------------- #
+  # Geo Localization (benchmark)
+  # ----------------------------------------------------------------------------------- #
+  GEO_LOCALIZATION:
+    # Benchmark Details:
+    #   Step1: Take a model and extract the model label predictions on test data.
+    #   Step2: Find the corresponding latitude/longitude predictions using the json mapping for train set.
+    #   Step3: find the ground truth latitute/longitude and compute the metric following the code.
+    TRAIN_LABEL_MAPPING: "/path/to/.json"
+    # [1, 25, 200, 750, 2500] -> [street, city, region, country, continent]
+    ACC_KM_THRESHOLDS: [1, 25, 200, 750, 2500]

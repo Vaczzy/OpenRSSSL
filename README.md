@@ -36,11 +36,19 @@ The repository is OPEN, Pull requests are welcome!
 
 ## Installation
 
-1. Install [Pytorch](https://pytorch.org/)
+1. Create Environment and Install [Pytorch](https://pytorch.org/)
 ```
+conda create -n openrsssl_env python=3.8 -y
+conda activate openrsssl_env
 conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.7 -c pytorch -c nvidia
 ```
+2. Install OpenRSSSL
 
+Download OpenRSSSL source code and switch to the source path for installation:
+```
+pip install --progress-bar off -r requirements.txt
+pip install -e .[dev]
+```
 2. Optional: Install Apex from source
 ```
 git clone --recursive https://www.github.com/NVIDIA/apex
@@ -48,13 +56,8 @@ cd apex
 python3 setup.py install
 ```
 
-3. Install OpenRSSSL
 
-Download OpenRSSSL source code and switch to the source path for installation:
-```
-pip install --progress-bar off -r requirements.txt
-pip install -e .[dev]
-```
+
 
 ## Support Self-supervised Method
 ### Contrastive Learning Method:
