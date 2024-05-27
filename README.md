@@ -22,7 +22,7 @@ The repository is OPEN, Pull requests are welcome!
 - [x] Reduced Dependency Package
 - [x] Add Actions
 - [ ] Complete the Pretrain Process
-- [ ] Check with VISSL
+- [ ] Check the VISSL Pretrain
 - [ ] Add Remote Sensing Image Segmentation Code
 - [ ] Add Remote Sensing Image Classfication Code
 - [ ] Add Remote Sensing Image Object Detection Code
