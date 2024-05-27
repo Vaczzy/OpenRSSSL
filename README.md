@@ -59,8 +59,7 @@ python3 setup.py install
 ## Support Self-supervised Method
 ### Contrastive Learning Method:
 
-&#x2705 SimCLR
-
+:white_check_mark: SimCLR
 - [ ] MoCo
 - [ ] BYOL *
 - [ ] Barlow Twins
