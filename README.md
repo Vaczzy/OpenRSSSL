@@ -60,9 +60,11 @@ python3 setup.py install
 ### Contrastive Learning Method:
 
 :white_check_mark: SimCLR
-- [ ] MoCo
+
+:white_check_mark: MoCo
 - [ ] BYOL *
-- [ ] Barlow Twins
+
+:white_check_mark: Barlow Twins
 - [ ] DenseCL *
 - [ ] SimSiam *
 - [ ] SwAV
