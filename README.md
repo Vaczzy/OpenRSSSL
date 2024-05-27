@@ -56,12 +56,11 @@ cd apex
 python3 setup.py install
 ```
 
-
-
-
 ## Support Self-supervised Method
 ### Contrastive Learning Method:
-- [ ] SimCLR
+
+&#x2705 SimCLR
+
 - [ ] MoCo
 - [ ] BYOL *
 - [ ] Barlow Twins
