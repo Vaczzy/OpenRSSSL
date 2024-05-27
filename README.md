@@ -49,7 +49,7 @@ Download OpenRSSSL source code and switch to the source path for installation:
 pip install --progress-bar off -r requirements.txt
 pip install -e .[dev]
 ```
-2. Optional: Install Apex from source
+3. Optional: Install Apex from source
 ```
 git clone --recursive https://www.github.com/NVIDIA/apex
 cd apex
