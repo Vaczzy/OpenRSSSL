@@ -21,6 +21,8 @@ The repository is OPEN, Pull requests are welcome!
 - [x] Simplify Installation Process
 - [x] Reduced Dependency Package
 - [x] Add Actions
+- [ ] Complete CI/CD
+- [ ] Simplify Pretrain Config File
 - [ ] Complete the Pretrain Process
 - [ ] Check the VISSL Pretrain
 - [ ] Add Remote Sensing Image Segmentation Code
@@ -67,7 +69,8 @@ python3 setup.py install
 :white_check_mark: Barlow Twins
 - [ ] DenseCL *
 - [ ] SimSiam *
-- [ ] SwAV
+
+:white_check_mark: SwAV
 - [ ] GLCNet (TGRS) *
 - [ ] FALSE (GRSL)
 - [ ] GraSS (TGRS)
@@ -79,8 +82,9 @@ python3 setup.py install
 * Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
 * Coming Soon...
 ### Self-Distillation Method:
-* DINO
-* iBOT
+- [] DINO
+
+:white_check_mark: iBOT
 * DINO v2
 * Coming Soon...
 
