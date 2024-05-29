@@ -76,7 +76,9 @@ python3 setup.py install
 - [ ] GraSS (TGRS)
 * Coming Soon...
 ### Generative Model Method:
-* MAE *
+- [ ] MAE *
+
+:white_check_mark: MSN
 * SimMIM *
 * EVA *
 * Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
@@ -87,6 +89,8 @@ python3 setup.py install
 :white_check_mark: iBOT
 * DINO v2
 * Coming Soon...
+### Others
+* Jigsaw
 
 ## Acknowledgement
 We would like to thank the [VISSL](https://github.com/facebookresearch/vissl) and [MMSegmentation](https://github.com/open-mmlab/mmsegmentation) for its open-source project.
