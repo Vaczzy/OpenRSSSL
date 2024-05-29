@@ -82,7 +82,7 @@ python3 setup.py install
 * Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
 * Coming Soon...
 ### Self-Distillation Method:
-- [] DINO
+- [ ] DINO
 
 :white_check_mark: iBOT
 * DINO v2
