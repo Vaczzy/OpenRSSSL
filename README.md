@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+    <a href="https://pytorch.org/get-started/previous-versions/"><img src="https://img.shields.io/badge/python-3.8~3.9-red"></a>
     <a href="https://pytorch.org/get-started/previous-versions/"><img src="https://img.shields.io/badge/pytorch-2.0-blue"></a>
     <a href="https://developer.nvidia.com/cuda-downloads"><img src="https://img.shields.io/badge/cuda-11.7~11.8-orange"></a>
     <a href="https://github.com/facebookresearch/vissl"><img src="https://img.shields.io/badge/vissl-0.1.5-yellow"></a>
