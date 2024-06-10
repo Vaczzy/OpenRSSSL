@@ -22,7 +22,7 @@ The repository is OPEN, Pull requests are welcome!
 - [x] Simplify Installation Process
 - [x] Reduced Dependency Package
 - [x] Add Actions
-- [ ] Complete CI/CD
+- [x] Complete CI/CD
 - [ ] Simplify Pretrain Config File
 - [ ] Complete the Pretrain Process
 - [ ] Check the VISSL Pretrain
