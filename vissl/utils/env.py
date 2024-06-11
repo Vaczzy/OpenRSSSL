@@ -20,7 +20,8 @@ def set_env_vars(local_rank: int, node_id: int, cfg: AttrDict):
     )
     dist_rank = cfg.DISTRIBUTED.NUM_PROC_PER_NODE * node_id + local_rank
     os.environ["RANK"] = str(dist_rank)
-    os.environ["LOCAL_RANK"] = str(local_rank)
+    # os.environ["LOCAL_RANK"] = str(local_rank)
+    os.environ["LOCAL_RANK"] = str(cfg.DISTRIBUTED.PROC_ID) # Support to select gpu //Vaczzy 2024.06.11
     if cfg.DISTRIBUTED.NCCL_DEBUG:
         os.environ["NCCL_DEBUG"] = "INFO"
     if cfg.DISTRIBUTED.NCCL_SOCKET_NTHREADS:
@@ -54,6 +55,7 @@ def get_machine_local_and_dist_rank():
     """
     Get the distributed and local rank of the current gpu.
     """
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    # local_rank = int(os.environ.get("LOCAL_RANK",0))
+    local_rank = int(os.environ.get("LOCAL_RANK"))
     distributed_rank = int(os.environ.get("RANK", 0))
     return local_rank, distributed_rank

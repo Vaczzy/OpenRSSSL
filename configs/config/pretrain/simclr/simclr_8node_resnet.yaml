@@ -117,9 +117,10 @@ config:
           # lengths: [0.002563, 0.997437]     # 5ep IG-1B = 50 ep IG-100M
   DISTRIBUTED:
     BACKEND: nccl
-    NUM_NODES: 8
-    NUM_PROC_PER_NODE: 8
-    RUN_ID: xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    NUM_NODES: 8 # number of machine
+    NUM_PROC_PER_NODE: 8 # number of gpu
+    RUN_ID: auto
+    PROC_ID: 1 # id of gpu
     INIT_METHOD: tcp
     NCCL_DEBUG: True
   MACHINE:
