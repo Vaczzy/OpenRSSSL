@@ -74,8 +74,8 @@ python3 setup.py install
 
 :white_check_mark: SwAV
 - [ ] GLCNet (TGRS) *
-- [ ] FALSE (GRSL)
-- [ ] GraSS (TGRS)
+- [ ] FALSE (GRSL) (coming soon.....)
+- [ ] GraSS (TGRS) (coming soon.....)
 * Coming Soon...
 ### Generative Model Method:
 - [ ] MAE *
@@ -84,9 +84,9 @@ python3 setup.py install
 * SimMIM *
 * EVA *
 * Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
-* Coming Soon...
+
 ### Self-Distillation Method:
-- [ ] DINO
+- [ ] DINO (testing.....)
 
 :white_check_mark: iBOT
 * DINO v2
