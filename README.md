@@ -23,7 +23,8 @@ The repository is OPEN, Pull requests are welcome!
 - [x] Reduced Dependency Package
 - [x] Add Actions
 - [x] Complete CI/CD
-- [ ] Simplify Pretrain Config File
+- [ ] Make Stable Fairscale
+- [ ] Simplify Pretrain Config File [Add PROC_ID]
 - [ ] Complete the Pretrain Process
 - [ ] Check the VISSL Pretrain
 - [ ] Add Remote Sensing Image Segmentation Code
