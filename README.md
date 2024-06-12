@@ -63,16 +63,16 @@ python3 setup.py install
 ## Support Self-supervised Method
 ### Contrastive Learning Method:
 
-:white_check_mark: SimCLR
+:green_check_mark: SimCLR
 
-:white_check_mark: MoCo
+:green_check_mark: MoCo
 - [ ] BYOL *
 
-:white_check_mark: Barlow Twins
+:green_check_mark: Barlow Twins
 - [ ] DenseCL *
 - [ ] SimSiam *
 
-:white_check_mark: SwAV
+:green_check_mark: SwAV
 - [ ] GLCNet (TGRS) *
 - [ ] FALSE (GRSL) (coming soon.....)
 - [ ] GraSS (TGRS) (coming soon.....)
@@ -80,17 +80,17 @@ python3 setup.py install
 ### Generative Model Method:
 - [ ] MAE *
 
-:white_check_mark: MSN
+:green_check_mark: MSN
 * SimMIM *
 * EVA *
 * Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
 
 ### Self-Distillation Method:
-- [ ] DINO (testing.....)
+:green_check_mark: DINO (DeiT)
 
-:white_check_mark: iBOT
+:green_check_mark: iBOT (DeiT)
 * DINO v2
-* Coming Soon...
+
 ### Others
 * Jigsaw
 
