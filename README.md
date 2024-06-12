@@ -23,8 +23,7 @@ The repository is OPEN, Pull requests are welcome!
 - [x] Reduced Dependency Package
 - [x] Add Actions
 - [x] Complete CI/CD
-- [ ] Make Stable Fairscale
-- [ ] Simplify Pretrain Config File [Add PROC_ID]
+- [x] Simplify Pretrain Config File [Add PROC_ID]
 - [ ] Complete the Pretrain Process
 - [ ] Check the VISSL Pretrain
 - [ ] Add Remote Sensing Image Segmentation Code
@@ -34,6 +33,7 @@ The repository is OPEN, Pull requests are welcome!
 - [ ] Create Web Page
 - [ ] Create stable OpenRSSSL Version
 - [ ] Complete the Whole Process: From Pretrain to Specific-Task
+- [ ] Make Stable Fairscale
 
 ## Version Record
 2024-03-03 openrsssl (alpha version)
@@ -63,36 +63,39 @@ python3 setup.py install
 ## Support Self-supervised Method
 ### Contrastive Learning Method:
 
-:green_check_mark: SimCLR
+:white_check_mark: SimCLR
 
-:green_check_mark: MoCo
+:white_check_mark: MoCo
+
+:white_check_mark: Barlow Twins
+
+:white_check_mark: SwAV
+
 - [ ] BYOL *
-
-:green_check_mark: Barlow Twins
 - [ ] DenseCL *
 - [ ] SimSiam *
-
-:green_check_mark: SwAV
 - [ ] GLCNet (TGRS) *
 - [ ] FALSE (GRSL) (coming soon.....)
 - [ ] GraSS (TGRS) (coming soon.....)
 * Coming Soon...
 ### Generative Model Method:
-- [ ] MAE *
 
-:green_check_mark: MSN
-* SimMIM *
-* EVA *
-* Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
+:white_check_mark: MSN
+
+- [ ] MAE *
+- [ ] SimMIM *
+- [ ] EVA *
+- [ ] Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
 
 ### Self-Distillation Method:
 :green_check_mark: DINO (DeiT)
 
 :green_check_mark: iBOT (DeiT)
-* DINO v2
+
+- [ ] DINO v2
 
 ### Others
-* Jigsaw
+- [ ] Jigsaw
 
 ## Acknowledgement
 We would like to thank the [VISSL](https://github.com/facebookresearch/vissl) and [MMSegmentation](https://github.com/open-mmlab/mmsegmentation) for its open-source project.
