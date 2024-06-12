@@ -77,7 +77,7 @@ python3 setup.py install
 - [ ] GLCNet (TGRS) *
 - [ ] FALSE (GRSL) (coming soon.....)
 - [ ] GraSS (TGRS) (coming soon.....)
-* Coming Soon...
+
 ### Generative Model Method:
 
 :white_check_mark: MSN
@@ -88,9 +88,9 @@ python3 setup.py install
 - [ ] Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
 
 ### Self-Distillation Method:
-:green_check_mark: DINO (DeiT)
+:white_check_mark: DINO (DeiT)
 
-:green_check_mark: iBOT (DeiT)
+:white_check_mark: iBOT (DeiT)
 
 - [ ] DINO v2
 
