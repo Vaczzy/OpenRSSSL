@@ -19,9 +19,10 @@
   <a href="#Citation">Citation</a>
 </p>
 <br>
-Open Source Remote Sensing Self-Supervised Learning.
-
-The repository is OPEN, Pull requests are welcome!
+<p align="center">
+    Open Source Remote Sensing Self-Supervised Learning.
+    The repository is OPEN, Pull requests are welcome!
+</p>
 
 ## TODO List
 
