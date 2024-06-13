@@ -113,9 +113,6 @@ python3 setup.py install
         <li>BYOL *</li>
         <li>DenseCL *</li>
         <li>SimSiam *</li>
-        <li>GLCNet (TGRS) *</li>
-        <li>FALSE (GRSL) (coming soon.....)</li>
-        <li>GraSS (TGRS) (coming soon.....)</li>
         <li>MAE *</li>
         <li>SimMIM *</li>
         <li>EVA *</li>
@@ -126,7 +123,10 @@ python3 setup.py install
       </td>
       <td>
         <ul>
-        <li>Comming Soon...</li>
+        Coming soon:
+        <li>GLCNet (TGRS) *</li>
+        <li>FALSE (GRSL) (coming soon.....)</li>
+        <li>GraSS (TGRS) (coming soon.....)</li>
         </ul>
       </td>
   </tbody>
