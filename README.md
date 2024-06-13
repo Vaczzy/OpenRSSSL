@@ -61,41 +61,68 @@ python3 setup.py install
 ```
 
 ## Support Self-supervised Method
-### Contrastive Learning Method:
 
-:white_check_mark: SimCLR
-
-:white_check_mark: MoCo
-
-:white_check_mark: Barlow Twins
-
-:white_check_mark: SwAV
-
-- [ ] BYOL *
-- [ ] DenseCL *
-- [ ] SimSiam *
-- [ ] GLCNet (TGRS) *
-- [ ] FALSE (GRSL) (coming soon.....)
-- [ ] GraSS (TGRS) (coming soon.....)
-
-### Generative Model Method:
-
-:white_check_mark: MSN
-
-- [ ] MAE *
-- [ ] SimMIM *
-- [ ] EVA *
-- [ ] Deconstructing Denoising Diffusion Models for Self-Supervised Learning *
-
-### Self-Distillation Method:
-:white_check_mark: DINO (DeiT)
-
-:white_check_mark: iBOT (DeiT)
-
-- [ ] DINO v2
-
-### Others
-- [ ] Jigsaw
+<table align="center">
+  <tbody>
+    <tr align="center" valign="bottom">
+      <td>
+        <b>Supported Backbones</b>
+      </td>
+      <td>
+        <b>General Self-supervised Learning Method</b>
+      </td>
+      <td>
+        <b>Remote Sensing Self-supervised Learning Method</b>
+      </td>
+    </tr>
+    <tr valign="top">
+      <td>
+        <ul>
+        <li>ResNet</li>
+        <li>ResNeXt</li>
+        <li>RegNet</li>
+        <li>MobileNet</li>
+        <li>Swin-Transformer</li>
+        <li>EfficientNet</li>
+        <li>ConvNeXt</li>
+        <li>BEiT</li>
+        <li>XCiT</li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+        Contrastive:
+        <li>SimCLR</li>
+        <li>MoCo</li>
+        <li>Barlow Twins</li>
+        <li>SwAV</li>
+        Generative:
+        <li>MSN</li>
+        Self-Distillation:
+        <li>DINO (DeiT)</li>
+        <li>iBOT (DeiT)</li>
+        Coming soon:
+        <li>BYOL *</li>
+        <li>DenseCL *</li>
+        <li>SimSiam *</li>
+        <li>GLCNet (TGRS) *</li>
+        <li>FALSE (GRSL) (coming soon.....)</li>
+        <li>GraSS (TGRS) (coming soon.....)</li>
+        <li>MAE *</li>
+        <li>SimMIM *</li>
+        <li>EVA *</li>
+        <li>Deconstructing Denoising Diffusion Models for Self-Supervised Learning *</li>
+        <li>DINO v2</li>
+        <li>Jigsaw</li>
+        </ul>
+      </td>
+      <td>
+        <ul>
+        <li>Comming Soon...</li>
+        </ul>
+      </td>
+  </tbody>
+</table>
 
 ## Acknowledgement
 We would like to thank the [VISSL](https://github.com/facebookresearch/vissl) and [MMSegmentation](https://github.com/open-mmlab/mmsegmentation) for its open-source project.
